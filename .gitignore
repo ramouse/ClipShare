@@ -25,6 +25,8 @@ token.conf
 
 # Claude Code 本地文件（settings.local.json 含权限信息，不入库）
 .claude/
+# Claude 协作文档：仅本机开发用，不进入 GitHub 仓库（2026-08-14 用户要求）
+CLAUDE.md
 
 # 测试与工具缓存
 .pytest_cache/

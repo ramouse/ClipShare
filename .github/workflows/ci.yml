@@ -20,7 +20,7 @@ jobs:
       - name: Ruff
         run: ruff check .
       - name: MyPy
-        run: mypy app
+        run: mypy app cli
 
   test:
     name: Tests (PostgreSQL)

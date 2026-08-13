@@ -3,7 +3,7 @@
 ## 项目概述
 这是一个 Python + FastAPI 的云剪切板分享系统（pastebin 类）项目，比特工场 2026 暑期技能提升项目。
 目标：匿名文本分享 + 有效期/访问次数控制 + 自研创新点（E2E 加密、CLI 工具），按项目书特等奖标准交付。
-当前阶段：M1-M5 已完成（脚手架/领域与数据层/REST API/Web 前端/E2E 加密+CLI），M6 部署准备中，M7 文档交付收尾。
+当前阶段：M1-M6 已完成（脚手架/领域与数据层/REST API/Web 前端/E2E 加密+CLI/生产部署基础设施），M7 文档交付收尾中（README/API 文档/开发心得/演示脚本/成员贡献 + 前端冒烟接入 CI）。
 
 ## 技术栈
 - 运行时：Python 3.12（全部在 Docker 容器内运行，本机无需装 Python）
@@ -70,5 +70,7 @@ docker compose run --rm app mypy app cli   # 类型检查（app 与 cli 两个�
 
 ## 测试接口
 docker compose run --rm app pytest         # 全部测试
+docker compose run --rm app alembic check  # 迁移与模型一致性
 curl http://localhost:8000/healthz         # 健康检查冒烟（返回 {"status":"ok"}）
 curl http://localhost:8000/docs            # OpenAPI 交互文档
+npm install && npm run e2e                 # M7：前端冒烟（jsdom）+ 加密 E2E（宿主机，服务器运行中）

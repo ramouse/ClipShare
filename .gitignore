@@ -41,3 +41,6 @@ Thumbs.db
 
 # 本地开发数据
 pgdata/
+
+# Node（M7 前端冒烟：jsdom 依赖）
+node_modules/

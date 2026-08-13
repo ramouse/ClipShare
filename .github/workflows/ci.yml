@@ -52,9 +52,68 @@ jobs:
           DATABASE_URL: postgresql+psycopg://clipshare:clipshare@localhost:5432/clipshare
         run: pytest
 
-  # M7 计划（开发方案 §6 待办「M6/M7 jsdom 冒烟接入 CI」，实现留 M7）：
-  # 前端冒烟 tests/e2e/frontend_smoke.js 当前依赖宿主机手动执行（M5），
-  # 需引入 package.json（jsdom 依赖）并新增本 job：build 通过后运行前端冒烟。
+  # M7 已闭环（开发方案 §6 待办「M6/M7 jsdom 冒烟接入 CI」）：
+  # 前端冒烟（jsdom）与端到端加密 E2E 由下方 e2e job 在 CI 中执行，
+  # 不再依赖宿主机手动运行（package.json + package-lock.json 锁定 jsdom）。
+  e2e:
+    name: Frontend E2E (jsdom smoke + encryption)
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: clipshare
+          POSTGRES_PASSWORD: clipshare
+          POSTGRES_DB: clipshare
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U clipshare"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # 与生产同口径：非 dev 安装（alembic/uvicorn 均为主依赖）
+      - name: Install dependencies (production profile)
+        run: pip install .
+      # 加密 E2E 走真实 API 落库，必须先建表
+      - name: Apply migrations
+        env:
+          DATABASE_URL: postgresql+psycopg://clipshare:clipshare@localhost:5432/clipshare
+        run: alembic upgrade head
+      - name: Start server (background)
+        env:
+          DATABASE_URL: postgresql+psycopg://clipshare:clipshare@localhost:5432/clipshare
+        run: |
+          nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log > /tmp/uvicorn.log 2>&1 &
+          echo $! > /tmp/uvicorn.pid
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install npm dependencies
+        run: npm ci
+      - name: Wait for health check
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/healthz > /dev/null; then
+              echo "server is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "server failed to start, uvicorn log:"
+          cat /tmp/uvicorn.log
+          exit 1
+      - name: Frontend smoke + encryption E2E
+        run: npm run e2e
+
   build:
     name: Build Docker image
     runs-on: ubuntu-latest

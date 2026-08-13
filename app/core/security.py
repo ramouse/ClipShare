@@ -11,8 +11,20 @@ SECURITY_HEADERS: dict[str, str] = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
+    # CSP（M4 页面渲染期策略）：API 的 JSON/PNG 响应带上无副作用，页面据此收窄执行面
+    "Content-Security-Policy": (
+        "default-src 'self'; "  # 一切资源默认仅同源（含 fetch 的 connect-src）
+        "img-src 'self' data:; "  # 二维码由同源 API 提供；data: 为预留内联图场景
+        "script-src 'self'; "  # 禁内联脚本与事件处理器（页面 JS 全部走 /static 文件）
+        "style-src 'self'; "  # 样式全部走文件：Bootstrap/highlight.js 主题均为 .css，
+        # 页面无 <style>/style 属性依赖（JS 的 element.style 赋值不受 CSP 限制），
+        # 故无需 'unsafe-inline'，保留对注入样式的封堵
+        "base-uri 'none'; "  # 禁 <base>，防基址劫持
+        "frame-ancestors 'none'; "  # 与 X-Frame-Options: DENY 双保险防点击劫持
+        "form-action 'self'; "  # 表单只能提交到同源（审查加固）
+        "object-src 'none'"  # 禁插件类对象嵌入（审查加固）
+    ),
 }
-# 注：CSP 属于页面渲染期策略（M4 前端页面按需配置），纯 JSON/PNG 的 API 响应无需 CSP
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

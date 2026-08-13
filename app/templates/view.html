@@ -50,6 +50,41 @@
         </div>
       </div>
 
+      {# v0.2 文件分享卡片（双探针命中文件端点后显示，默认隐藏）：
+         图标 / 文件名 / 大小 / 元信息 / 加密徽章 / 下载与预览按钮 / 预览区 #}
+      <div id="view-file" class="d-none">
+        <div class="card shadow-sm">
+          <div class="card-body">
+            <div class="d-flex align-items-start gap-3 flex-wrap">
+              <div class="display-4" id="file-icon" aria-hidden="true">📄</div>
+              <div class="flex-grow-1" style="min-width: 16rem">
+                <h2 class="h5 mb-1 text-break" id="file-name"></h2>
+                <div class="text-muted small mb-2" id="file-size"></div>
+                <div class="d-flex flex-wrap gap-2 align-items-center text-muted small mb-3"
+                     id="file-meta-bar">
+                  <span class="badge text-bg-light border" id="file-meta-created"></span>
+                  <span class="badge text-bg-light border" id="file-meta-expires"></span>
+                  <span class="badge text-bg-light border" id="file-meta-views"></span>
+                  {# 加密徽章：encrypted=true 时显示（view.js 控制） #}
+                  <span class="badge text-bg-warning d-none" id="file-encrypted-badge">
+                    🔒 已加密（需密钥）
+                  </span>
+                </div>
+                <div class="d-flex flex-wrap gap-2">
+                  <button type="button" class="btn btn-primary" id="file-download-btn">
+                    ⬇️ 下载文件
+                  </button>
+                  <button type="button" class="btn btn-outline-secondary d-none"
+                          id="file-preview-btn">👁️ 预览内容</button>
+                </div>
+                {# 预览内容渲染区（复用消毒渲染管线，默认隐藏） #}
+                <div id="file-preview-area" class="share-content mt-3 d-none"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {# 错误区（404/410 等）：标题与说明由 view.js 按 API 错误 type 渲染 #}
       <div id="view-error" class="d-none text-center py-5">
         <div class="display-5 mb-3" id="error-icon" aria-hidden="true"></div>

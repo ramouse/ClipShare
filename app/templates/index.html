@@ -5,17 +5,53 @@
   <div class="col-12 col-lg-8 col-xl-7">
     <h1 class="h3 mb-1">创建分享</h1>
     <p class="text-muted mb-4">
-      粘贴任意文本，生成分享链接与二维码。支持 Markdown 渲染与代码高亮（自动识别）。
+      粘贴文本或上传文件，生成分享链接与二维码。支持 Markdown 渲染、代码高亮与端到端加密。
     </p>
+
+    {# v0.2：分享类型切换（文本 / 文件）。两套表单共用同一张卡片，由 app.js 按
+       当前激活标签分流校验与提交——本地校验互不干扰 #}
+    <ul class="nav nav-pills mb-3" id="share-type-tabs" role="tablist" aria-label="分享类型">
+      <li class="nav-item">
+        <button type="button" class="nav-link active" data-type="text" role="tab" aria-selected="true">
+          📝 文本
+        </button>
+      </li>
+      <li class="nav-item">
+        <button type="button" class="nav-link" data-type="file" role="tab" aria-selected="false">
+          📁 文件
+        </button>
+      </li>
+    </ul>
 
     <div class="card shadow-sm">
       <div class="card-body">
         <form id="create-form" novalidate>
-          <div class="mb-3">
-            <label class="form-label" for="content">内容</label>
-            <textarea class="form-control" id="content" name="content" rows="12"
-                      placeholder="在此粘贴要分享的内容…" required></textarea>
-            <div class="form-text text-end" id="char-counter">0 / 100000</div>
+          <div id="text-section">
+            <div class="mb-3">
+              <label class="form-label" for="content">内容</label>
+              <textarea class="form-control" id="content" name="content" rows="12"
+                        placeholder="在此粘贴要分享的内容…" required></textarea>
+              <div class="form-text text-end" id="char-counter">0 / 100000</div>
+            </div>
+          </div>
+
+          {# v0.2 文件分享区（默认隐藏，由 app.js 切换显示）：
+             文件输入 + 拖拽容器 + 文件信息 + 上限提示 #}
+          <div class="d-none" id="file-section">
+            <div class="mb-3">
+              <label class="form-label" for="file-input">选择文件</label>
+              <input type="file" class="form-control mb-2" id="file-input" aria-label="选择文件">
+              <div class="file-dropzone" id="file-dropzone" role="button" tabindex="0"
+                   aria-label="拖拽文件到此处上传">
+                <p class="mb-1">📂 点击上方按钮选择文件，或将文件拖拽到此处</p>
+                <p class="small text-muted mb-0">文件上传走浏览器原生流式（分块发送，不占内存）；预览仅限文本类文件头部</p>
+              </div>
+              <div class="form-text" id="file-info">未选择文件</div>
+              {# 超过 10MB 加密上限时的联动提示（默认隐藏，由 app.js 控制） #}
+              <div class="form-text text-warning d-none" id="file-encrypt-hint">
+                🔒 当前文件超过 10MB 加密上限，加密分享已关闭，将明文直传。
+              </div>
+            </div>
           </div>
 
           <div class="row g-3 mb-3">
@@ -49,6 +85,12 @@
             密钥仅存在于分享链接 # 号之后的片段中（不经过服务器），请务必完整复制链接分享；
             加密后长度约为原文的 1.4 倍。
           </p>
+          {# v0.2 文件模式加密说明（默认隐藏）：加密需整文件载入内存，仅 ≤10MB #}
+          <p class="text-muted small mb-3 d-none" id="encrypt-note-file">
+            文件加密在浏览器内完成（仅支持 ≤10MB，需整文件载入内存），密文与密钥均不经过服务器；
+            密钥仅存在于分享链接 # 号之后的片段中，请务必完整复制链接分享。
+            超过 10MB 的文件将自动关闭加密、明文直传。
+          </p>
 
           <div class="alert alert-danger d-none" id="create-error" role="alert"></div>
 
@@ -73,7 +115,7 @@
         <div class="d-flex align-items-center gap-3 flex-wrap">
           <img id="qr-img" alt="分享二维码" class="qr-img" width="140" height="140">
           <div>
-            <p class="text-muted small mb-2">
+            <p class="text-muted small mb-2" id="result-hint">
               手机扫码或复制链接即可打开分享页。注意：访问次数一经消耗不可恢复。
             </p>
             <a class="btn btn-success" id="open-btn" href="#">打开分享页 →</a>

@@ -1,10 +1,12 @@
-/* M4 前端浏览器级冒烟（可选加分项，宿主机 node 执行）：
+/* M4 前端浏览器级冒烟（可选加分项，宿主机 node 执行）+ v0.2 文件卡片：
  * 用 jsdom 加载真实服务器上的查看页 HTML 与真实 vendor/自研 JS，
  * 桩掉 window.fetch 模拟 API 响应，验证 view.js 的：
  *   1. 内容类型自动识别（JSON / Markdown / 代码 / 纯文本）
  *   2. XSS 红线：marked 与 highlight.js 输出经 DOMPurify 消毒后进 DOM
  *   3. 错误页按 API type 渲染（share_not_found / share_expired / share_views_exhausted）
  *   4. 元信息展示与「文本/Markdown/代码」标签页手动切换
+ *   5. v0.2 文件双探针：文本端点 404 share_not_found → 文件端点 200 →
+ *      文件卡片渲染（文件名/大小/加密徽章/预览按钮可见性）
  * 运行：node tests/e2e/frontend_smoke.js （需宿主机 node + 容器内服务运行中）
  * 前置：npm install jsdom（见文件末尾注释）
  */
@@ -44,27 +46,36 @@ function liveResources() {
   };
 }
 
-/** 在页面脚本执行前注入的 fetch 桩与 alert 追踪。 */
-function beforeParse(window, apiResponse) {
-  window.fetch = () =>
-    Promise.resolve({
-      ok: apiResponse.status >= 200 && apiResponse.status < 300,
-      status: apiResponse.status,
-      json: () => Promise.resolve(apiResponse.body),
+/**
+ * 在页面脚本执行前注入的 fetch 桩与 alert 追踪。
+ * apiResponder 支持两种形态：
+ *   - { status, body }：所有请求返回同一响应（原有用例）；
+ *   - (url) => { status, body }：按 URL 分流的响应（v0.2 文件双探针用例）。
+ */
+function beforeParse(window, apiResponder) {
+  window.fetch = (url) => {
+    const resp =
+      typeof apiResponder === "function" ? apiResponder(String(url)) : apiResponder;
+    return Promise.resolve({
+      ok: resp.status >= 200 && resp.status < 300,
+      status: resp.status,
+      json: () => Promise.resolve(resp.body),
     });
+  };
   window.alertCalls = [];
   window.alert = (msg) => window.alertCalls.push(msg);
 }
 
-/** 等待渲染完成：内容区或错误区出现。 */
+/** 等待渲染完成：内容区 / 文件卡片 / 错误区任一出现。 */
 async function waitRender(window, timeoutMs = 8000) {
   const doc = window.document;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const contentHidden = doc.getElementById("view-content").classList.contains("d-none");
     const errorHidden = doc.getElementById("view-error").classList.contains("d-none");
-    if (!contentHidden || !errorHidden) {
-      return !contentHidden;
+    const fileHidden = doc.getElementById("view-file").classList.contains("d-none");
+    if (!contentHidden || !errorHidden || !fileHidden) {
+      return true;
     }
     await new Promise((r) => setTimeout(r, 50));
   }
@@ -230,9 +241,81 @@ async function testErrorPage(type, expectedTitle) {
   dom.window.close();
 }
 
+/** 文件分享的 fetch 桩：文本端点 404 share_not_found → 文件端点返回罐装元数据。 */
+function fileResponder(meta) {
+  return (url) => {
+    if (url.includes("/api/v1/shares/")) {
+      return {
+        status: 404,
+        body: { type: "share_not_found", title: "分享不存在", status: 404, detail: "短码不存在" },
+      };
+    }
+    return { status: 200, body: meta };
+  };
+}
+
+/**
+ * 用例 9：文件双探针 —— 文本端点 404 后探测文件端点，渲染文件卡片
+ * （文件名 / 大小格式化 / 元信息 / 加密徽章 / 预览按钮可见性）。
+ */
+async function testFileCardRender() {
+  const meta = {
+    code: "file1",
+    kind: "file",
+    original_name: "报告.md",
+    size_bytes: 2048,
+    encrypted: false,
+    content_type: "text/markdown",
+    preview_available: true,
+    expires_at: null,
+    remaining_views: 5,
+    created_at: "2026-08-13T08:00:00",
+  };
+  const dom = await loadViewPage("file1", fileResponder(meta));
+  const doc = dom.window.document;
+  assert(!doc.getElementById("view-file").classList.contains("d-none"), "FILE 文件卡片显示");
+  assert(doc.getElementById("file-name").textContent === "报告.md", "FILE 文件名渲染");
+  assert(doc.getElementById("file-size").textContent === "2.0 KB", "FILE 大小格式化（2048 → 2.0 KB）");
+  assert(doc.getElementById("file-meta-created").textContent.includes("创建于"), "FILE 创建时间渲染");
+  assert(doc.getElementById("file-meta-expires").textContent.includes("永久"), "FILE 永久有效期");
+  assert(doc.getElementById("file-meta-views").textContent.includes("剩余 5 次"), "FILE 剩余次数渲染");
+  assert(doc.getElementById("file-encrypted-badge").classList.contains("d-none"), "FILE 未加密无徽章");
+  assert(!doc.getElementById("file-preview-btn").classList.contains("d-none"), "FILE 预览按钮可见");
+  assert(doc.getElementById("file-preview-area").classList.contains("d-none"), "FILE 预览区默认隐藏");
+  dom.window.close();
+}
+
+/**
+ * 用例 10：加密文件卡片 —— 加密徽章显示、预览按钮隐藏
+ * （encrypted 否决预览，preview_available=false 双保险）。
+ */
+async function testFileCardEncrypted() {
+  const meta = {
+    code: "file2",
+    kind: "file",
+    original_name: "secret.bin",
+    size_bytes: 10240,
+    encrypted: true,
+    content_type: "application/octet-stream",
+    preview_available: false,
+    expires_at: null,
+    remaining_views: null,
+    created_at: "2026-08-13T08:00:00",
+  };
+  const dom = await loadViewPage("file2", fileResponder(meta));
+  const doc = dom.window.document;
+  assert(!doc.getElementById("view-file").classList.contains("d-none"), "ENC 加密文件卡片显示");
+  assert(doc.getElementById("file-name").textContent === "secret.bin", "ENC 文件名渲染");
+  assert(doc.getElementById("file-size").textContent === "10.0 KB", "ENC 大小格式化");
+  assert(!doc.getElementById("file-encrypted-badge").classList.contains("d-none"), "ENC 加密徽章显示");
+  assert(doc.getElementById("file-preview-btn").classList.contains("d-none"), "ENC 加密隐藏预览按钮");
+  assert(doc.getElementById("file-meta-views").textContent.includes("不限"), "ENC 不限访问次数");
+  dom.window.close();
+}
+
 (async () => {
   try {
-    console.log("== M4 前端浏览器级冒烟（jsdom + 真实服务器资源）==");
+    console.log("== M4 前端浏览器级冒烟 + v0.2 文件卡片（jsdom + 真实服务器资源）==");
     await testMarkdownXssSanitized();
     await testJsonDetection();
     await testCodeDetection();
@@ -241,6 +324,8 @@ async function testErrorPage(type, expectedTitle) {
     await testErrorPage("share_not_found", "分享不存在");
     await testErrorPage("share_expired", "分享已过期");
     await testErrorPage("share_views_exhausted", "分享访问次数已耗尽");
+    await testFileCardRender();
+    await testFileCardEncrypted();
     console.log(`\n结果: ${passed} passed, ${failed} failed`);
     process.exit(failed === 0 ? 0 : 1);
   } catch (err) {

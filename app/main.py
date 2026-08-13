@@ -1,4 +1,5 @@
 """ClipShare 应用入口。"""
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import structlog
@@ -15,7 +16,7 @@ logger = structlog.get_logger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     logger.info("app.startup", version="0.1.0", environment=settings.environment)
     yield
     logger.info("app.shutdown")

@@ -8,8 +8,21 @@ dist/
 
 # 环境与密钥
 .env
+.env.*
+!.env.example
 .venv/
 venv/
+
+# 敏感文件（密钥/证书/令牌，一律禁止上传）
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+token.conf
+
+# Claude Code 本地文件（settings.local.json 含权限信息，不入库）
+.claude/
 
 # 测试与工具缓存
 .pytest_cache/

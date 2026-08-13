@@ -41,6 +41,8 @@ Thumbs.db
 
 # 本地开发数据
 pgdata/
+# 文件分享落盘目录（v0.2 模块 B）：磁盘名无扩展名、可能含用户加密内容，严禁入库
+data/
 
 # Node（M7 前端冒烟：jsdom 依赖）
 node_modules/

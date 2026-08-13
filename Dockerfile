@@ -6,7 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-RUN groupadd --system app && useradd --system --gid app --home-dir /app app
+# 固定 uid 1000：与生产宿主目录挂载（./data/files 归 uid 1000）对齐，容器内外权限一致
+RUN groupadd --system app && useradd --system --uid 1000 --gid app --home-dir /app app
 
 WORKDIR /app
 
@@ -27,6 +28,10 @@ ARG INSTALL_DEV=false
 RUN pip install --upgrade pip -i "$PIP_INDEX_URL" \
     && if [ "$INSTALL_DEV" = "true" ]; then pip install -e ".[dev]" -i "$PIP_INDEX_URL"; else pip install . -i "$PIP_INDEX_URL"; fi \
     && chown -R app:app /app
+
+# 文件分享落盘目录：生产卷挂载 ./data/files:/app/data/files 的容器内落点，
+# 提前建好并归属 app 用户，保证挂载后应用可写（dev 靠热挂载同样生效）
+RUN mkdir -p /app/data/files && chown -R app:app /app
 
 USER app
 

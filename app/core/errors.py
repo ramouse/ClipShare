@@ -126,6 +126,14 @@ class ShareFileContentMissingError(AppError):
     status = 410
 
 
+class ShareFileValidationError(AppError):
+    """文件表单参数校验失败（422）：与 FastAPI 内置校验同 type，客户端分流行为一致。"""
+
+    type = "validation_error"
+    title = "请求参数校验失败"
+    status = 422
+
+
 def _problem_response(
     status: int,
     problem_type: str,

@@ -40,6 +40,24 @@ services:
       # slowapi 限流（按 IP 内存瞬时计数，不落库、不落日志；IP 仅用于限流判定）
       RATE_LIMIT_CREATE: ${RATE_LIMIT_CREATE:-30/minute}
       RATE_LIMIT_READ: ${RATE_LIMIT_READ:-60/minute}
+      # ---- 文件分享 ----
+      # 落盘目录：容器内路径，宿主卷挂载 ./data/files → /app/data/files（见下方 volumes）
+      FILE_STORAGE_DIR: ${FILE_STORAGE_DIR:-/app/data/files}
+      # 单文件上限 / E2E 加密上限 / 预览截断上限（字节）
+      FILE_MAX_SIZE: ${FILE_MAX_SIZE:-104857600}
+      FILE_ENCRYPT_MAX_SIZE: ${FILE_ENCRYPT_MAX_SIZE:-10485760}
+      FILE_PREVIEW_MAX_SIZE: ${FILE_PREVIEW_MAX_SIZE:-204800}
+      # 扩展名白名单（逗号分隔；默认值见 app/core/config.py，一般无需覆盖）
+      FILE_ALLOWED_EXTENSIONS: ${FILE_ALLOWED_EXTENSIONS:-txt,md,json,py,js,ts,jsx,tsx,html,css,scss,java,c,cpp,h,go,rs,php,rb,sh,yaml,yml,toml,ini,cfg,conf,log,csv,tsv,xml,sql,pdf,doc,docx,xls,xlsx,ppt,pptx,rtf,odt,ods,odp,png,jpg,jpeg,gif,webp,bmp,ico,svg,avif,zip,rar,7z,tar,gz,bz2,xz,mp3,wav,ogg,flac,mp4,webm,mov,mkv}
+      FILE_PREVIEW_EXTENSIONS: ${FILE_PREVIEW_EXTENSIONS:-txt,md,json,py,js,ts,jsx,tsx,html,css,java,c,cpp,h,go,rs,php,rb,sh,yaml,yml,toml,ini,cfg,conf,log,csv,tsv,xml,sql}
+      # 文件相关限流（独立预算，与文本分享互不影响）
+      RATE_LIMIT_UPLOAD: ${RATE_LIMIT_UPLOAD:-30/minute}
+      RATE_LIMIT_FILE_READ: ${RATE_LIMIT_FILE_READ:-60/minute}
+      RATE_LIMIT_FILE_DOWNLOAD: ${RATE_LIMIT_FILE_DOWNLOAD:-60/minute}
+    volumes:
+      # 文件分享持久化：宿主目录挂载（uid 1000，与镜像内固定 uid 对齐）；
+      # 备份脚本（模块 E）随 pgdata 一并纳入快照
+      - ./data/files:/app/data/files
     # 生产 CMD：无 --reload（运行镜像内源码快照，不挂载宿主机源码），
     # 保留 --no-access-log（隐私红线：服务端不记录客户端 IP:port，与 nginx access_log off 双保险）
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log

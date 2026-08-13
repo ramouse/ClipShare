@@ -57,9 +57,10 @@ extend-exclude = ["migrations"]
 select = ["E", "F", "I", "UP", "B", "SIM", "C4", "S"]
 ignore = ["S101"]
 
-# FastAPI 的 Depends 属于「装饰性函数调用默认值」，是 B008 的合法豁免场景
+# FastAPI 的 Depends / File / Form 属于「装饰性函数调用默认值」，是 B008 的合法豁免场景
+# （B 模块新增文件上传后加入 File / Form：multipart 表单参数的标准写法）
 [tool.ruff.lint.flake8-bugbear]
-extend-immutable-calls = ["fastapi.Depends"]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.File", "fastapi.Form"]
 
 [tool.mypy]
 python_version = "3.12"

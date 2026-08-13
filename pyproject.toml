@@ -18,6 +18,8 @@ dependencies = [
     "alembic>=1.13",
     "pydantic-settings>=2.4",
     "structlog>=24.4",
+    "slowapi>=0.1.9",
+    "qrcode[pil]>=7.4",
 ]
 
 [project.optional-dependencies]
@@ -46,7 +48,16 @@ extend-exclude = ["migrations"]
 select = ["E", "F", "I", "UP", "B", "SIM", "C4", "S"]
 ignore = ["S101"]
 
+# FastAPI 的 Depends 属于「装饰性函数调用默认值」，是 B008 的合法豁免场景
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
+
+# slowapi / qrcode 无类型桩（未提供 py.typed），放宽缺失类型标注的检查
+[[tool.mypy.overrides]]
+module = ["slowapi", "slowapi.*", "qrcode", "qrcode.*"]
+ignore_missing_imports = true

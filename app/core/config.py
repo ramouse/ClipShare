@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     environment: str = "development"
     database_url: str = "postgresql+psycopg://clipshare:clipshare@localhost:5432/clipshare"
     log_level: str = "INFO"
+    # 分享网页公网地址：与 /s/{code} 拼接形成分享链接（部署时覆盖为真实域名）
+    public_base_url: str = "http://localhost:8000"
+    # 单条分享内容长度上限（字符数）
+    share_max_content_length: int = 100000
+    # 速率限制（slowapi 语法：次数/单位）：创建与读取按 IP 限额
+    rate_limit_create: str = "30/minute"
+    rate_limit_read: str = "60/minute"
 
 
 @lru_cache

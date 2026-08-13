@@ -55,6 +55,7 @@ jobs:
   build:
     name: Build Docker image
     runs-on: ubuntu-latest
+    needs: [lint, test]  # 门禁串行：lint 与 test 通过后才构建镜像
     steps:
       - uses: actions/checkout@v4
       - name: Build image

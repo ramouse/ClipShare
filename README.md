@@ -1,6 +1,6 @@
 # ClipShare — 轻量级云剪切板分享系统
 
-[![CI](https://github.com/ramouse/YunQianqie/actions/workflows/ci.yml/badge.svg)](https://github.com/ramouse/YunQianqie/actions)
+[![CI](https://github.com/ramouse/ClipShare/actions/workflows/ci.yml/badge.svg)](https://github.com/ramouse/ClipShare/actions)
 
 > 比特工场 2026 暑期技能提升项目。跨设备快速分享文本/代码片段：打开网页 → 粘贴 → 生成链接/二维码 → 任何设备打开即取。
 

@@ -46,6 +46,7 @@ tests/
 - HTTP 状态码语义准确：创建成功 201、参数错误 422、资源不存在 404
 - 分层依赖单向：api → services → domain，禁止路由文件直接操作数据库
 - 每个路由文件只处理一种资源
+- 时间约定：全链路统一 naive UTC（应用与 DB 容器均 UTC 时钟），禁止混用 aware datetime
 - Commit 遵循 Conventional Commits，格式 `<type>(<scope>): <subject>`：
   - type：feat / fix / refactor / test / docs / chore / ci
   - scope：模块号（M1–M7）或分层（api / domain / db）
@@ -54,7 +55,7 @@ tests/
   - 每个模块原子提交，保证 git log 可完整追溯开发过程
 
 ## 禁止事项
-- 不用 Python 3.8 兼容写法，按 3.11+ 标准写（如 `list[str]` 而非 `List[str]`）
+- 不用旧版兼容写法，按 3.12 标准写（如 `list[str]` 而非 `List[str]`）
 - 禁止在 async 路由里放阻塞调用（DB 访问走同步 def 路由或线程池）
 - 禁止将用户输入直接 innerHTML 渲染（必须转义 / DOMPurify 消毒）
 - 禁止用自增 ID 作分享链接（用 secrets 随机 Base62 短码）

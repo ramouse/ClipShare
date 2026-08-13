@@ -43,6 +43,10 @@
           </li>
         </ul>
 
+        {# M6.5 兜底提示条：内容含 Markdown 语法但自动识别为纯文本时显示（view.js 控制），
+           提示可切换到 Markdown 标签查看渲染效果；文案由 view.js textContent 赋值 #}
+        <div class="d-none text-muted small mt-2 mb-1" id="md-hint"></div>
+
         <div class="card shadow-sm rounded-top-0">
           <div class="card-body p-0">
             <div id="content" class="share-content" role="tabpanel"></div>

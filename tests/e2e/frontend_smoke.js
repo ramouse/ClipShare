@@ -1,4 +1,4 @@
-/* M4 前端浏览器级冒烟（可选加分项，宿主机 node 执行）+ v0.2 文件卡片：
+/* M4 前端浏览器级冒烟（可选加分项，宿主机 node 执行）+ v0.2 文件卡片 + v0.2 Markdown 修复：
  * 用 jsdom 加载真实服务器上的查看页 HTML 与真实 vendor/自研 JS，
  * 桩掉 window.fetch 模拟 API 响应，验证 view.js 的：
  *   1. 内容类型自动识别（JSON / Markdown / 代码 / 纯文本）
@@ -7,6 +7,8 @@
  *   4. 元信息展示与「文本/Markdown/代码」标签页手动切换
  *   5. v0.2 文件双探针：文本端点 404 share_not_found → 文件端点 200 →
  *      文件卡片渲染（文件名/大小/加密徽章/预览按钮可见性）
+ *   6. v0.2 Markdown 修复回归：单换行 <br> / 代码块 hljs 高亮 / 外链图片占位 /
+ *      gfm 表格 / data: 与同源图片保留 / 仅加粗自动进 Markdown / #md-hint 兜底提示条
  * 运行：node tests/e2e/frontend_smoke.js （需宿主机 node + 容器内服务运行中）
  * 前置：npm install jsdom（见文件末尾注释）
  */
@@ -229,6 +231,98 @@ async function testManualTabSwitch() {
   dom.window.close();
 }
 
+/**
+ * 用例 11：Markdown 渲染修复（线上 bug 回归）——
+ * ① 单换行渲染出 <br>（marked breaks:true）；② 围栏代码块 pre code 出现且含
+ * hljs class（highlightElement 生效）；③ 外链图片被替换为占位链接（原 img 消失、
+ * 出现含原 URL 的 <a>）；④ gfm 表格渲染；⑤ data:/同源相对图片保留不动。
+ */
+async function testMarkdownRendering() {
+  const dom = await loadViewPage("case-mk2", {
+    status: 200,
+    body: {
+      code: "case-mk2",
+      content:
+        "# 标题\n\n第一行\n第二行\n\n```js\nconst x = 1;\n```\n\n| 列A | 列B |\n|---|---|\n| 1 | 2 |\n\n![外链图](https://example.com/pic.png)\n\n![本地图](data:image/png;base64,AAA=)\n![相对图](pic.png)",
+      expires_at: null,
+      remaining_views: null,
+      created_at: "2026-08-13T08:00:00",
+    },
+  });
+  const doc = dom.window.document;
+  const contentEl = doc.getElementById("content");
+  // ① 单换行：breaks:true 渲染出 <br>
+  assert(contentEl.querySelector("br"), "MK2 单换行渲染 <br>");
+  // ② 代码块高亮：pre code 出现且带 hljs class（highlightElement 生效）
+  const preCode = contentEl.querySelector("pre code");
+  assert(preCode && preCode.classList.contains("hljs"), "MK2 代码块 hljs 高亮生效");
+  assert(preCode.querySelectorAll("span").length > 0, "MK2 代码块高亮 token 输出");
+  // ③ 外链图片：原 img 消失，出现含原 URL 的占位链接
+  assert(contentEl.querySelectorAll("img[src^='http']").length === 0, "MK2 外链图片已替换");
+  const extA = contentEl.querySelector("a[href='https://example.com/pic.png']");
+  assert(extA && extA.textContent.includes("外部图片"), "MK2 外链图片占位链接出现");
+  assert(extA && extA.target === "_blank" && extA.rel === "noopener noreferrer", "MK2 占位链接新窗口打开");
+  // ④ gfm 表格渲染
+  assert(contentEl.querySelector("table") && contentEl.querySelectorAll("td").length === 2, "MK2 gfm 表格渲染");
+  // ⑤ data:/同源相对图片保留不动
+  assert(contentEl.querySelectorAll("img[src='data:image/png;base64,AAA=']").length === 1, "MK2 data: 图片保留");
+  assert(contentEl.querySelectorAll("img[src='pic.png']").length === 1, "MK2 同源相对图片保留");
+  dom.window.close();
+}
+
+/**
+ * 用例 12：仅加粗的简单 Markdown（无行级特征）—— 整行内联兜底规则使其
+ * 自动进入 markdown 模式渲染出 <strong>（修复显示原始 ** 的线上 bug）。
+ */
+async function testBoldOnlyMarkdown() {
+  const dom = await loadViewPage("case-bd", {
+    status: 200,
+    body: {
+      code: "case-bd",
+      content: "**加粗文本**",
+      expires_at: null,
+      remaining_views: null,
+      created_at: "2026-08-13T08:00:00",
+    },
+  });
+  const doc = dom.window.document;
+  const contentEl = doc.getElementById("content");
+  assert(doc.querySelector('#mode-tabs .nav-link[data-mode="markdown"]').classList.contains("active"), "BD 仅加粗自动识别为 Markdown");
+  const strong = contentEl.querySelector("strong");
+  assert(strong && strong.textContent === "加粗文本", "BD 渲染出 <strong>");
+  assert(!contentEl.textContent.includes("**"), "BD 无原始 ** 残留");
+  dom.window.close();
+}
+
+/**
+ * 用例 13：纯文本含 ** 但无行级特征 —— 仍 text 模式展示原文 + #md-hint 提示条
+ * 显示；用户切换到任意模式后提示条隐藏。
+ */
+async function testMdHintFallback() {
+  const dom = await loadViewPage("case-hi", {
+    status: 200,
+    body: {
+      code: "case-hi",
+      content: "这个价格是 **50** 元，还能再降。",
+      expires_at: null,
+      remaining_views: null,
+      created_at: "2026-08-13T08:00:00",
+    },
+  });
+  const doc = dom.window.document;
+  const contentEl = doc.getElementById("content");
+  const mdHint = doc.getElementById("md-hint");
+  assert(doc.querySelector('#mode-tabs .nav-link[data-mode="text"]').classList.contains("active"), "HI 含 ** 纯文本仍 text 模式");
+  assert(contentEl.textContent.includes("**50**"), "HI 原文展示（** 不消失）");
+  assert(contentEl.querySelectorAll("strong").length === 0, "HI 未误渲染为 HTML");
+  assert(mdHint && !mdHint.classList.contains("d-none"), "HI #md-hint 提示条显示");
+  assert(mdHint.textContent.includes("Markdown 标签"), "HI 提示条文案正确");
+  // 切换到 Markdown 模式后提示条隐藏
+  doc.querySelector('#mode-tabs .nav-link[data-mode="markdown"]').click();
+  assert(mdHint.classList.contains("d-none"), "HI 切换模式后提示条隐藏");
+  dom.window.close();
+}
+
 /** 用例 6/7/8：三种错误 type 的友好错误页。 */
 async function testErrorPage(type, expectedTitle) {
   const dom = await loadViewPage(`err-${type}`, {
@@ -321,6 +415,9 @@ async function testFileCardEncrypted() {
     await testCodeDetection();
     await testPlainText();
     await testManualTabSwitch();
+    await testMarkdownRendering();
+    await testBoldOnlyMarkdown();
+    await testMdHintFallback();
     await testErrorPage("share_not_found", "分享不存在");
     await testErrorPage("share_expired", "分享已过期");
     await testErrorPage("share_views_exhausted", "分享访问次数已耗尽");

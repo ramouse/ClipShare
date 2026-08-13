@@ -35,6 +35,8 @@
   const metaEncrypted = document.getElementById("meta-encrypted");
   const modeTabs = document.querySelectorAll("#mode-tabs .nav-link");
   const contentEl = document.getElementById("content");
+  // M6.5 Markdown 修复：text 模式兜底提示条（检测到 Markdown 语法但识别为纯文本时显示）
+  const mdHint = document.getElementById("md-hint");
   const fileCard = document.getElementById("view-file");
   const fileIcon = document.getElementById("file-icon");
   const fileName = document.getElementById("file-name");
@@ -180,6 +182,72 @@
   /* ------------------------------------------------------------------ */
 
   /**
+   * Markdown 行级特征正则表（[正则, 权重]）：detectType 自动判定与 text 模式
+   * 提示条共用同一套，保证两处逻辑不漂移。权重仅为强度标注，判定条件为得分 ≥ 1。
+   * 内联特征（加粗/链接）不在此列——不参与自动判定（避免纯文本含 ** 或网址被误判）。
+   */
+  const MD_LINE_PATTERNS = [
+    [/^```/, 3], // 围栏代码块：强信号
+    [/^~~~/, 3], // 围栏代码块（~ 变体）
+    [/^#{1,6}\s/, 2], // 标题
+    [/^>\s?/, 1], // 引用
+    [/^[-*+]\s/, 1], // 无序列表
+    [/^\d+[.)]\s/, 1], // 有序列表
+    [/^[-*_]{3,}$/, 1], // 分隔线
+    [/^\s*\|/, 1], // 表格行（GFM 表格行必须 | 开头，避免 JS `a || b` 双竖线误判）
+  ];
+
+  /** 单行 Markdown 行级特征得分（0 = 无特征）。 */
+  function mdLineScore(line) {
+    for (const pair of MD_LINE_PATTERNS) {
+      if (pair[0].test(line)) {
+        return pair[1];
+      }
+    }
+    return 0;
+  }
+
+  /** 整行内联 Markdown 正则：整行内容即加粗/链接（无其他杂文）。
+   *  这是「仅加粗/链接的简单 Markdown 显示原始 **」线上 bug 的修复点：
+   *  文本中间出现的 **（如 2 ** 3）或网址不在此列，仍按纯文本处理。 */
+  const MD_WHOLE_LINE_PATTERNS = [
+    /^\*\*[^*]+\*\*$/, // 整行加粗 **加粗**
+    /^__[^_]+__$/, // 整行加粗 __加粗__
+    /^\[[^\]]+\]\([^)]*\)$/, // 整行链接 [文字](地址)
+  ];
+
+  /** 内联 Markdown 特征正则（仅提示条用，不参与自动判定）：text 模式内容含
+   *  这些语法时提示可切换 Markdown 标签查看渲染效果。 */
+  const MD_INLINE_PATTERNS = [
+    /\*\*[^*]+\*\*/, // 加粗 **x**
+    /__[^_]+__/, // 加粗 __x__
+    /\[[^\]]+\]\([^)]*\)/, // 链接 [x](y)
+  ];
+
+  /** 内容每个非空行都是整行内联 Markdown → 判为简单 Markdown。 */
+  function isWholeLineMd(lines) {
+    let hasLine = false;
+    for (const line of lines) {
+      const t = line.trim();
+      if (t === "") {
+        continue;
+      }
+      hasLine = true;
+      let matched = false;
+      for (const re of MD_WHOLE_LINE_PATTERNS) {
+        if (re.test(t)) {
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        return false;
+      }
+    }
+    return hasLine;
+  }
+
+  /**
    * 自动识别内容类型：json → markdown → code → text 依次判定。
    * 返回 "json" | "markdown" | "code" | "text"。
    */
@@ -196,32 +264,16 @@
       }
     }
 
-    // 2) Markdown：启发式打分，得分 ≥ 2 判为 Markdown
-    let mdScore = 0;
+    // 2) Markdown：任一行级特征得分 ≥ 1 即判 Markdown（加粗/链接等内联特征
+    //    不参与自动判定，避免纯文本含 ** 或网址被误判）
     const lines = trimmed.split("\n");
     for (const line of lines) {
-      const l = line.trim();
-      if (/^```/.test(l) || /^~~~/.test(l)) {
-        mdScore += 3; // 围栏代码块：强信号
-      } else if (/^#{1,6}\s/.test(l)) {
-        mdScore += 2; // 标题
-      } else if (/^>\s?/.test(l)) {
-        mdScore += 1; // 引用
-      } else if (/^[-*+]\s/.test(l) || /^\d+[.)]\s/.test(l)) {
-        mdScore += 1; // 列表
-      } else if (/^[-*_]{3,}$/.test(l)) {
-        mdScore += 1; // 分隔线
-      } else if (/\|.*\|/.test(l)) {
-        mdScore += 1; // 表格行
+      if (mdLineScore(line.trim()) >= 1) {
+        return "markdown";
       }
     }
-    if (/\[[^\]]+\]\([^)]*\)/.test(trimmed)) {
-      mdScore += 1; // 内联链接
-    }
-    if (/\*\*[^*]+\*\*|__[^_]+__/.test(trimmed)) {
-      mdScore += 1; // 加粗
-    }
-    if (mdScore >= 2) {
+    // 兜底：整行即加粗/链接的简单 Markdown（仅内联特征、无行级特征）
+    if (isWholeLineMd(lines)) {
       return "markdown";
     }
 
@@ -284,18 +336,52 @@
     }
   }
 
-  /** Markdown：marked 渲染 → DOMPurify 消毒 → innerHTML（唯一允许用户内容进 innerHTML 的路径）。 */
+  /**
+   * Markdown：marked 渲染 → DOMPurify 消毒 → innerHTML → 代码块高亮与外链图片占位。
+   * XSS 红线：marked 输出必须经 DOMPurify 消毒才能进 DOM；此后的 DOM 操作只作用于
+   * 已消毒 DOM（属性赋值 / 自建节点 + textContent，不解析任何新 HTML，无 XSS 面）。
+   */
   function renderMarkdown(text, target) {
     target.dataset.raw = "false";
-    const rawHtml = marked.parse(text);
+    // breaks:true 保留单换行（marked 默认 false 会把单换行丢弃）；gfm:true 支持表格
+    const rawHtml = marked.parse(text, { breaks: true, gfm: true });
     const safeHtml = DOMPurify.sanitize(rawHtml, { USE_PROFILES: { html: true } });
     target.innerHTML = safeHtml;
+    // 代码块高亮：hljs.highlightElement 同步阻塞，但文件预览 ≤200KB、文本分享
+    // ≤100k 字符，性能可接受；只作用于已消毒 DOM，安全
+    target.querySelectorAll("pre code[class*='language-']").forEach(function (codeEl) {
+      hljs.highlightElement(codeEl);
+    });
     // 外链一律新窗口打开并禁止携带 referrer（分享链接本身就是访问凭据）
     target.querySelectorAll("a[href]").forEach(function (a) {
       if (a.getAttribute("href").startsWith("http")) {
         a.target = "_blank";
         a.rel = "noopener noreferrer";
       }
+    });
+    // 外链图片被 CSP（img-src 'self' data:）拦截且静默消失：替换为可点击占位链接
+    replaceExternalImages(target);
+  }
+
+  /**
+   * 外链图片占位替换：src 以 http(s) 开头的图片会被 CSP 拦截且无声消失，
+   * 替换为「外部图片（点击新窗口查看）」链接（href=原图 URL、新窗口打开）。
+   * 只创建自建 <a> 并 textContent 赋值，无 XSS 面；data: 与同源（相对路径）图片保留不动。
+   */
+  function replaceExternalImages(target) {
+    // 遍历全部 img 后按正则判定外链（大小写不敏感 + 协议相对 //host 也覆盖），
+    // 比 img[src^='http'] 选择器更稳（审查加固：HTTP:// 与 //host/pic.png 边界）
+    target.querySelectorAll("img").forEach(function (img) {
+      const src = img.getAttribute("src") || "";
+      if (!/^(https?:)?\/\//i.test(src)) {
+        return; // data: 与同源相对路径图片保留不动
+      }
+      const a = document.createElement("a");
+      a.href = src;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = "🖼️ 外部图片（点击新窗口查看）";
+      img.replaceWith(a);
     });
   }
 
@@ -334,9 +420,39 @@
       }
       currentMode = tab.dataset.mode;
       setActiveTab(currentMode);
+      mdHint.classList.add("d-none"); // 手动切换后不再提示
       render();
     });
   });
+
+  /**
+   * text 模式兜底提示：内容含 Markdown 语法（行级或内联特征）但自动识别为纯文本时，
+   * 显示提示条引导用户切到 Markdown 标签。文案一律 textContent 赋值，无 XSS 面。
+   */
+  function updateMdHint() {
+    if (!mdHint) {
+      return;
+    }
+    let show = false;
+    if (currentMode === "text" && shareData && typeof shareData.content === "string") {
+      const lines = shareData.content.trim().split("\n");
+      for (const line of lines) {
+        const t = line.trim();
+        if (mdLineScore(t) >= 1) {
+          show = true;
+          break;
+        }
+        if (MD_INLINE_PATTERNS.some(function (re) {
+          return re.test(t);
+        })) {
+          show = true;
+          break;
+        }
+      }
+    }
+    mdHint.textContent = "检测到 Markdown 语法，可切换上方 Markdown 标签查看渲染效果";
+    mdHint.classList.toggle("d-none", !show);
+  }
 
   /* ------------------------------------------------------------------ */
   /* v0.2 文件卡片：图标 / 大小 / 元信息 / 下载 / 预览                     */
@@ -569,7 +685,7 @@
   /* 主流程：文本探针 → 文件探针（双探针）                                  */
   /* ------------------------------------------------------------------ */
 
-  /** 加载成功：填充元信息、自动识别类型、首次渲染、激活对应标签页。 */
+  /** 加载成功：填充元信息、自动识别类型、首次渲染、激活对应标签页、更新兜底提示条。 */
   function showContent(data) {
     shareData = data;
     currentMode = detectType(data.content);
@@ -579,6 +695,7 @@
     fileCard.classList.add("d-none");
     contentBox.classList.remove("d-none");
     render();
+    updateMdHint();
   }
 
   /**

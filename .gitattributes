@@ -10,5 +10,9 @@
 Dockerfile text eol=lf
 .dockerignore text eol=lf
 .env.example text eol=lf
+.env.prod.example text eol=lf
+# 部署/备份脚本：CRLF 会使 shebang 与 set 解析失败，必须 LF
+*.sh text eol=lf
+*.conf text eol=lf
 Makefile text eol=lf
 LICENSE text eol=lf

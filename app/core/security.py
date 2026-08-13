@@ -42,6 +42,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 # 速率限制器：内存型存储（仅进程内瞬时计数，重启即清零），key 为客户端 IP。
 # IP 仅用于限流判定，不落日志、不落库（项目书隐私红线：不记录用户个人信息与 IP）。
-# M6 遗留：get_remote_address 直接信任 X-Forwarded-For 首个 IP，生产环境置于
-# 反向代理后时，代理必须剥离/覆盖该头（否则限流可被伪造 IP 绕过）。
+# 注意：get_remote_address 直接信任 X-Forwarded-For 首个 IP。生产环境置于反向代理
+# 后时，代理必须剥离/覆盖该头（否则限流可被伪造 IP 绕过）——已由生产配置
+# conf/nginx.conf 的「覆盖式 X-Forwarded-For $remote_addr」落实，部署时勿改为追加。
 limiter = Limiter(key_func=get_remote_address, storage_uri="memory://")

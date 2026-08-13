@@ -12,7 +12,7 @@
 #   （crontab -e 编辑；确认 cron 服务已启用：systemctl status cron）
 #
 # 备份内容：PostgreSQL 逻辑备份（pg_dump），gzip 压缩，文件名带时间戳。
-# 恢复说明见文件末尾注释与 docs/DEPLOYMENT.md §7。
+# 恢复说明见文件末尾注释与 docs/DEPLOYMENT.md §6.3。
 # =============================================================================
 set -euo pipefail
 

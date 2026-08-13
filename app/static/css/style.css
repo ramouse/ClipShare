@@ -20,6 +20,31 @@
   background: #fff;
 }
 
+/* v0.2 文件分享：拖拽上传区（悬停/拖拽时高亮提示） */
+#file-dropzone {
+  border: 2px dashed var(--bs-border-color);
+  border-radius: 0.5rem;
+  padding: 1rem 1.25rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+#file-dropzone:hover,
+#file-dropzone:focus-visible {
+  border-color: var(--bs-primary);
+}
+
+#file-dropzone.dragging {
+  border-color: var(--bs-primary);
+  background-color: var(--bs-primary-bg-subtle);
+}
+
+/* 查看页文件卡片图标 */
+#file-icon {
+  line-height: 1;
+}
+
 /* 查看页元信息徽章 */
 #meta-bar .badge {
   font-weight: 400;

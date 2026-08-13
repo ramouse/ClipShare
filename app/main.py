@@ -7,6 +7,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from app.api.routes.files import router as files_router
 from app.api.routes.health import router as health_router
 from app.api.routes.pages import router as pages_router
 from app.api.routes.shares import router as shares_router
@@ -46,6 +47,7 @@ def create_app() -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(shares_router, prefix="/api/v1")
+    app.include_router(files_router, prefix="/api/v1")
     app.include_router(pages_router)
     app.include_router(health_router)
     return app

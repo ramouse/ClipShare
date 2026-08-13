@@ -62,6 +62,78 @@ class ShortcodeGenerationError(AppError):
     status = 500
 
 
+class ShareFileNotFoundError(AppError):
+    """文件分享不存在（404）。"""
+
+    type = "file_not_found"
+    title = "文件不存在"
+    status = 404
+
+
+class ShareFileExpiredError(AppError):
+    """文件分享已过期（410）；触发时会顺带懒删磁盘文件。"""
+
+    type = "file_expired"
+    title = "文件已过期"
+    status = 410
+
+
+class ShareFileViewsExhaustedError(AppError):
+    """文件预览/下载次数已耗尽（410）。"""
+
+    type = "file_views_exhausted"
+    title = "文件访问次数已耗尽"
+    status = 410
+
+
+class ShareFileTooLargeError(AppError):
+    """文件超过大小上限（413）；流式落盘过程中断，磁盘不残留半成品。"""
+
+    type = "file_too_large"
+    title = "文件过大"
+    status = 413
+
+
+class ShareFileTypeNotAllowedError(AppError):
+    """文件扩展名不在白名单内（415）。"""
+
+    type = "file_type_not_allowed"
+    title = "文件类型不允许"
+    status = 415
+
+
+class ShareFileEncryptNotAvailableError(AppError):
+    """文件超过加密上限或类型不支持加密（422）：明文直传或降级处理。"""
+
+    type = "file_encrypt_not_available"
+    title = "该文件不支持加密"
+    status = 422
+
+
+class ShareFilePreviewNotAvailableError(AppError):
+    """文件不支持文本预览（415）：仅允许预览扩展名且在截断上限内。"""
+
+    type = "preview_not_available"
+    title = "文件不支持预览"
+    status = 415
+
+
+class ShareFileContentMissingError(AppError):
+    """数据库记录存在但磁盘文件缺失（410）：视为内容不可再获取。"""
+
+    type = "file_content_missing"
+    title = "文件内容缺失"
+    status = 410
+
+
+class ShareFileValidationError(AppError):
+    """文件表单参数校验失败（422）：与 FastAPI 内置校验同 type，客户端分流行为一致。"""
+
+    type = "validation_error"
+    title = "请求参数校验失败"
+    status = 422
+
+
 def _problem_response(
     status: int,
     problem_type: str,

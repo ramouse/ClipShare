@@ -98,20 +98,11 @@
   /* ------------------------------------------------------------------ */
 
   /**
-   * 明文 → 密文标记串 "ENC1:<iv>.<cipher>"。
-   * 每次加密生成新随机 IV，同一密钥多次加密结果互不相同。
+   * 解析密文标记串 → {iv, cipher}（Uint8Array）。
+   * 格式非法（缺前缀 / 缺分隔符 / iv 长度非法）一律同步抛错。
+   * 文本与字节两条解密链路共用同一解析逻辑，保证格式语义完全一致。
    */
-  async function encryptContent(plaintext, key) {
-    var iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
-    var data = new TextEncoder().encode(plaintext);
-    var cipher = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, data));
-    return VERSION_PREFIX + bytesToBase64Url(iv) + "." + bytesToBase64Url(cipher);
-  }
-
-  /**
-   * 密文标记串 → 明文。密钥错误 / 格式非法一律 reject（调用方 catch 渲染错误页）。
-   */
-  async function decryptContent(encoded, key) {
+  function parseMarker(encoded) {
     if (!isEncryptedContent(encoded)) {
       throw new Error("不是 ClipShare 加密内容（缺少 " + VERSION_PREFIX + " 前缀）");
     }
@@ -125,10 +116,69 @@
     if (iv.length !== IV_BYTES) {
       throw new Error("密文格式错误：iv 长度非法");
     }
+    return { iv: iv, cipher: cipher };
+  }
+
+  /**
+   * 明文（字符串）→ 密文标记串 "ENC1:<iv>.<cipher>"。
+   * 每次加密生成新随机 IV，同一密钥多次加密结果互不相同。
+   */
+  async function encryptContent(plaintext, key) {
+    var iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
+    var data = new TextEncoder().encode(plaintext);
+    var cipher = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, data));
+    return VERSION_PREFIX + bytesToBase64Url(iv) + "." + bytesToBase64Url(cipher);
+  }
+
+  /**
+   * 密文标记串 → 明文（字符串）。密钥错误 / 格式非法一律 reject（调用方 catch 渲染错误页）。
+   * v0.2 起解析逻辑抽取为 parseMarker，文本与字节链路共用同一格式。
+   */
+  async function decryptContent(encoded, key) {
+    var parts = parseMarker(encoded);
     var plain = new Uint8Array(
-      await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, cipher)
+      await crypto.subtle.decrypt({ name: "AES-GCM", iv: parts.iv }, key, parts.cipher)
     );
     return new TextDecoder().decode(plain);
+  }
+
+  /**
+   * 明文二进制 → 密文字节（ENC1 标记串的 UTF-8 编码）。
+   * 文件分享 E2E 加密入口：AES-GCM 直接加密 Uint8Array，密文以字节形式
+   * 随 multipart 上传，服务器只存字节密文。
+   */
+  async function encryptBytes(data, key) {
+    var iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
+    var cipher = new Uint8Array(
+      await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, data)
+    );
+    var marker = VERSION_PREFIX + bytesToBase64Url(iv) + "." + bytesToBase64Url(cipher);
+    // 标记串纯 ASCII，TextEncoder 编码无损（被编码的是标记元数据而非明文）
+    return new TextEncoder().encode(marker);
+  }
+
+  /**
+   * 密文字节 → 明文字节（文件分享 E2E 解密）。
+   *
+   * 红线（v0.2）：明文二进制永不经过字符串层——解密结果直接由
+   * subtle.decrypt 以 Uint8Array 输出，禁止 String.fromCharCode /
+   * TextDecoder 对明文直转（任意字节经 TextDecoder 会被替换字符 U+FFFD
+   * 损坏，0x00 与非法 UTF-8 序列即触发）。此处仅把密文标记串（纯 ASCII：
+   * ENC1: 前缀 + base64url）按字节解码为字符串做格式解析，属于元数据层，
+   * 与明文无关。
+   */
+  async function decryptBytes(data, key) {
+    // ASCII 安全解码：逐字节 String.fromCharCode 只用于标记解析（0-255 无损）
+    var bin = "";
+    var CHUNK = 0x8000;
+    for (var i = 0; i < data.length; i += CHUNK) {
+      var part = Array.prototype.slice.call(data.subarray(i, i + CHUNK));
+      bin += String.fromCharCode.apply(null, part);
+    }
+    var parts = parseMarker(bin);
+    return new Uint8Array(
+      await crypto.subtle.decrypt({ name: "AES-GCM", iv: parts.iv }, key, parts.cipher)
+    );
   }
 
   /** 判断一段文本是否为 ClipShare 加密内容（版本前缀开头）。 */
@@ -144,5 +194,8 @@
     importKeyFromBase64Url: importKeyFromBase64Url,
     encryptContent: encryptContent,
     decryptContent: decryptContent,
+    parseMarker: parseMarker,
+    encryptBytes: encryptBytes,
+    decryptBytes: decryptBytes,
   };
 });

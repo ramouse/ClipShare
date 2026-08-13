@@ -35,6 +35,14 @@ git fetch "$GIT_REMOTE"
 git checkout "$GIT_BRANCH" >/dev/null 2>&1 || true   # 已在该分支时 checkout 报错属正常，忽略
 git pull --ff-only "$GIT_REMOTE" "$GIT_BRANCH"
 
+# v0.2 文件分享：确保文件卷目录存在且归属容器内固定 uid 1000
+# （挂载目录权限不匹配时 app 容器内落盘报 Permission denied——首次部署/新机器必执行）
+mkdir -p "$APP_DIR/data/files"
+if ! chown -R 1000:1000 "$APP_DIR/data/files" 2>/dev/null; then
+    echo "提示：chown 需 root 权限已跳过；若容器内落盘报 Permission denied，" >&2
+    echo "      请以 root 执行本脚本或手动 chown -R 1000:1000 $APP_DIR/data/files" >&2
+fi
+
 echo "[2/5] 校验 .env 与 compose 配置"
 # 密钥红线：.env 缺失或关键变量缺失时，config 阶段即报错，拒绝带病部署
 [ -f .env ] || { echo "错误：缺少 .env —— 请先 cp .env.prod.example .env 并填写" >&2; exit 1; }
@@ -43,6 +51,9 @@ docker compose -f "$COMPOSE_FILE" config -q
 echo "[3/5] 构建并启动（生产镜像：INSTALL_DEV=false，无测试工具、无源码挂载）"
 docker compose -f "$COMPOSE_FILE" build app
 docker compose -f "$COMPOSE_FILE" up -d
+# v0.2：nginx 配置文件是只读挂载（conf/nginx.conf），up -d 不会感知文件变更——
+# 必须显式 restart 让新配置（client_max_body_size 110m / 超时 300s 等）生效
+docker compose -f "$COMPOSE_FILE" restart nginx
 
 echo "[4/5] 执行数据库迁移（alembic upgrade head，幂等：无新迁移时无操作）"
 docker compose -f "$COMPOSE_FILE" run --rm app alembic upgrade head

@@ -24,6 +24,8 @@ dependencies = [
     "jinja2>=3.1",
     # M5 创新点 B：CLI 工具（httpx 由 dev 移入主依赖，CLI 运行时依赖）
     "httpx>=0.27",
+    # v0.2 文件分享：multipart/form-data 上传解析（fastapi 需显式依赖）
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
@@ -55,9 +57,10 @@ extend-exclude = ["migrations"]
 select = ["E", "F", "I", "UP", "B", "SIM", "C4", "S"]
 ignore = ["S101"]
 
-# FastAPI 的 Depends 属于「装饰性函数调用默认值」，是 B008 的合法豁免场景
+# FastAPI 的 Depends / File / Form 属于「装饰性函数调用默认值」，是 B008 的合法豁免场景
+# （B 模块新增文件上传后加入 File / Form：multipart 表单参数的标准写法）
 [tool.ruff.lint.flake8-bugbear]
-extend-immutable-calls = ["fastapi.Depends"]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.File", "fastapi.Form"]
 
 [tool.mypy]
 python_version = "3.12"

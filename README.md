@@ -12,8 +12,10 @@
 - **分享链接 + 二维码**：多人可同时获取内容
 - **内容智能识别**：纯文本 / Markdown / 代码高亮 / JSON，支持手动切换渲染模式
 - **端到端加密分享**：AES-256-GCM 浏览器加密，服务器零明文，密钥仅在链接 fragment（`#k=…`）中
-- **CLI 快速分享工具**：`clipshare send` / `clipshare get`，终端即可分享与读取
-- **企业级工程实践**：三层测试（92 用例，覆盖率 96%）+ ruff + mypy strict + GitHub Actions CI + Docker 一键部署
+- **文件分享（v0.2）**：上传代码/文档/截图等文件（上限 100MB），全链路流式传输；≤10MB 支持 E2E 加密；文本预览 / 下载 / 过期懒删
+- **安卓 PWA（v0.2）**：可安装到主屏幕、独立窗口打开，离线可用首页壳（静态资源缓存）
+- **CLI 快速分享工具**：`clipshare send` / `clipshare upload` / `clipshare get`，终端即可分享与读取
+- **企业级工程实践**：三层测试（155 用例）+ ruff + mypy strict + GitHub Actions CI + Docker 一键部署
 
 ## 技术栈
 
@@ -31,6 +33,10 @@ docker compose up -d --build
 # 打开 http://localhost:8000
 ```
 
+手机访问同一地址（需 HTTPS 或 localhost，PWA 安全上下文要求）：
+用 Chrome/Edge 打开页面 → 浏览器菜单「添加到主屏幕」→ 桌面生成 ClipShare 图标，
+独立窗口打开、静态资源离线可用。
+
 ## CLI 用法
 
 `clipshare` 是随项目安装的命令行工具（`[project.scripts]` 入口，`pip install .` 后即可用）。
@@ -40,16 +46,29 @@ docker compose up -d --build
 clipshare send "你好，ClipShare"
 clipshare send @notes.txt --expiry 7d --max-views 5
 
+# 上传文件：流式上传（64KB 分块，不整读进内存），上限 100MB；≤10MB 支持 --encrypted
+clipshare upload ./report.pdf --expiry 7d --max-views 5
+clipshare upload ./secret.bin --encrypted --expiry 1h
+
 # 读取：输出分享内容（短码或完整链接均可）
 clipshare get AbCdEf
 clipshare get http://localhost:8000/s/AbCdEf
+
+# 读取到文件：get 自动回退探测文件端点，--output 按字节流式写盘
+clipshare get AbCdEf --output ./report.pdf
 ```
+
+> `clipshare get AbCdEf --output ./file` 对文本分享写 UTF-8 原文；对文件分享下载原文件
+> （短码 404 且 type=share_not_found 时自动回退探测 `/api/v1/files/{code}`，见 docs/API.md §文件分享）。
 
 参数与约定：
 
 | 项 | 说明 |
 |----|------|
 | `send` 参数 | `TEXT\|@FILE`：直接传文本，或以 `@` 开头传文件路径（UTF-8） |
+| `upload` 参数 | `PATH`：文件路径，流式 multipart 上传（大文件走 600s 放宽超时） |
+| `--encrypted` | `upload` 专用：E2E 加密（≤10MB，超限服务端 422 拒绝） |
+| `get --output` | 保存到文件：文本写 UTF-8 原文 / 文件流式写盘（走 600s 放宽超时） |
 | `--expiry` | `1h` / `24h`（默认）/ `7d` / `forever` |
 | `--max-views` | `1` / `5` / `0`（0 = 不限，默认） |
 | `--base-url` | 服务器地址；优先级：`--base-url` > 环境变量 `CLIPSHARE_BASE_URL` > `http://localhost:8000` |

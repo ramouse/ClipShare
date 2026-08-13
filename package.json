@@ -4,7 +4,7 @@
   "private": true,
   "description": "ClipShare 前端冒烟测试（jsdom）：M7 将宿主机手动执行的 tests/e2e/*.js 接入 CI",
   "scripts": {
-    "e2e": "node tests/e2e/frontend_smoke.js && node tests/e2e/encryption.test.js"
+    "e2e": "node tests/e2e/frontend_smoke.js && node tests/e2e/encryption.test.js && node tests/e2e/pwa.test.js"
   },
   "devDependencies": {
     "jsdom": "^29.0.0"

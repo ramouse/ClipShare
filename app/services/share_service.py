@@ -11,12 +11,9 @@ from app.core.errors import (
     ViewsExhaustedError,
 )
 from app.db.models import Share
-from app.db.repository import ShareRepository
+from app.db.repository import ShareRepository, ShortcodeRepository
 from app.domain.expiry import Expiry, expires_at, is_expired
-from app.domain.shortcode import generate_shortcode
-
-# 短码冲突重试次数上限：唯一索引兜底 + 极低碰撞概率（62^6 空间），重试即可覆盖
-SHORTCODE_MAX_RETRIES = 5
+from app.domain.shortcode import SHORTCODE_MAX_RETRIES, generate_shortcode
 
 
 def share_url(code: str, base_url: str) -> str:
@@ -32,8 +29,11 @@ def create_share(
     max_views: int | None,
     now: datetime,
 ) -> Share:
-    """创建分享：短码生成 + 唯一约束冲突重试 + 到期时间计算。
+    """创建分享：短码双写（shortcodes + shares）+ 唯一约束冲突重试。
 
+    先向短码中心表登记（kind="share"），再写业务表，同一事务提交——
+    任何一类资源（文本/文件）占用过的短码都不可能再被另一类使用，
+    跨类型全局唯一由 shortcodes 主键约束兜底。
     now 由调用方注入（naive UTC），便于测试与全链路时间约定统一。
     冲突重试：捕获唯一约束 IntegrityError 后回滚事务并重新生成短码，
     最多 SHORTCODE_MAX_RETRIES 次，仍失败抛 ShortcodeGenerationError（映射 500）。
@@ -43,6 +43,7 @@ def create_share(
     for _ in range(SHORTCODE_MAX_RETRIES):
         code = generate_shortcode()
         try:
+            ShortcodeRepository.create(session, code=code, kind="share")
             share = ShareRepository.create(
                 session,
                 code=code,

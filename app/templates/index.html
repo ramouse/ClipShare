@@ -38,6 +38,18 @@
             </div>
           </div>
 
+          {# M5 创新点 A：端到端加密分享开关。加密在浏览器完成，服务器只存密文；
+             密钥拼入分享链接 # 之后的 fragment，不随 HTTP 请求发送 #}
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="encrypt-toggle">
+            <label class="form-check-label" for="encrypt-toggle">🔒 加密分享（端到端加密）</label>
+          </div>
+          <p class="text-muted small mb-3" id="encrypt-note">
+            开启后内容将在你的浏览器中加密后才发送，服务器只保存密文，无法读取内容。
+            密钥仅存在于分享链接 # 号之后的片段中（不经过服务器），请务必完整复制链接分享；
+            加密后长度约为原文的 1.4 倍。
+          </p>
+
           <div class="alert alert-danger d-none" id="create-error" role="alert"></div>
 
           <button type="submit" class="btn btn-primary w-100 py-2" id="submit-btn">创建分享</button>
@@ -52,6 +64,11 @@
         <div class="input-group mb-3">
           <input type="text" class="form-control" id="share-link" readonly aria-label="分享链接">
           <button class="btn btn-outline-secondary" type="button" id="copy-btn">复制链接</button>
+        </div>
+        {# 加密模式提醒（默认隐藏，由 app.js 控制）：二维码由服务器生成、不含密钥 #}
+        <div class="alert alert-warning d-none" id="encrypt-warning" role="alert">
+          🔒 该分享已加密：服务器与二维码中都不含密钥。请复制上方<strong>带密钥的完整链接</strong>分享，
+          密钥位于链接 # 号之后，一旦丢失将无法解密。
         </div>
         <div class="d-flex align-items-center gap-3 flex-wrap">
           <img id="qr-img" alt="分享二维码" class="qr-img" width="140" height="140">
@@ -69,5 +86,6 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/js/crypto.js"></script>
 <script src="/static/js/app.js"></script>
 {% endblock %}

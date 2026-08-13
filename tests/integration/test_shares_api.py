@@ -280,6 +280,8 @@ def test_create_rate_limit_returns_429(client: TestClient) -> None:
 
     必须放在本文件最后定义：本文件前面的创建用例已在同一限流窗口内消耗额度，
     本用例循环发送直到出现 429（pytest 同文件内按定义顺序执行）。
+    另注意：跨文件的测试（如 test_encryption.py）也在同一 30/min 创建预算内，
+    新增创建用例时需整体评估同窗口消耗，避免本用例偶发失效。
     """
     limit = int(settings.rate_limit_create.split("/")[0])
     got_429 = False

@@ -1,0 +1,37 @@
+# 开发环境：app（含 dev 依赖）+ PostgreSQL
+# name 固定项目名，隔离本机其他 Docker 项目，避免误操作
+name: clipshare
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        INSTALL_DEV: "true"
+    environment:
+      DATABASE_URL: postgresql+psycopg://clipshare:clipshare@db:5432/clipshare
+    volumes:
+      - .:/app   # 开发热挂载：源码改动即时生效，无需重建镜像
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: clipshare
+      POSTGRES_PASSWORD: clipshare
+      POSTGRES_DB: clipshare
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clipshare -d clipshare"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

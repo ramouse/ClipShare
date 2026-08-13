@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  lint:
+    name: Lint & type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install ".[dev]"
+      - name: Ruff
+        run: ruff check .
+      - name: MyPy
+        run: mypy app
+
+  test:
+    name: Tests (PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: clipshare
+          POSTGRES_PASSWORD: clipshare
+          POSTGRES_DB: clipshare
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U clipshare"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install ".[dev]"
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql+psycopg://clipshare:clipshare@localhost:5432/clipshare
+        run: pytest
+
+  build:
+    name: Build Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build .

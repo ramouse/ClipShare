@@ -1,0 +1,73 @@
+/* ClipShare 页面自定义样式：在 Bootstrap 之上做简洁现代的补充 */
+
+/* 创建页文本域 */
+#content {
+  resize: vertical;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+#char-counter {
+  margin-top: 0.25rem;
+}
+
+/* 二维码 */
+.qr-img {
+  border: 1px solid var(--bs-border-color);
+  border-radius: 0.375rem;
+  padding: 0.25rem;
+  background: #fff;
+}
+
+/* 查看页元信息徽章 */
+#meta-bar .badge {
+  font-weight: 400;
+}
+
+/* 查看页内容区 */
+.share-content {
+  padding: 1.25rem;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* 文本 / JSON / Markdown 模式：保留空白与换行，可横向滚动 */
+.share-content[data-raw="true"] {
+  white-space: pre-wrap;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.875rem;
+  max-height: 70vh;
+  overflow: auto;
+}
+
+/* 代码模式：highlight.js 输出包在 pre>code 里 */
+.share-content pre {
+  margin: 0;
+  max-height: 70vh;
+  overflow: auto;
+  border-radius: 0;
+}
+
+.share-content pre code.hljs {
+  font-size: 0.85rem;
+  padding: 1.25rem;
+}
+
+/* Markdown 渲染的表格在手机上横向滚动 */
+.share-content .table-responsive,
+.share-content table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* 移动端小屏微调 */
+@media (max-width: 576px) {
+  .share-content {
+    padding: 0.9rem;
+  }
+  .card-body .input-group {
+    flex-wrap: wrap;
+  }
+}

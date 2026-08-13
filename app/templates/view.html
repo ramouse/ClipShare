@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block styles %}
+  {# 代码高亮主题仅查看页需要 #}
+  <link rel="stylesheet" href="/static/vendor/highlight-github.min.css">
+{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-12 col-lg-9 col-xl-8">
+    {# 查看页容器：code 由服务端注入（Jinja2 自动转义），内容与错误全部由 view.js 调 API 渲染 #}
+    <div id="view-root" data-code="{{ code }}">
+
+      {# 加载中 #}
+      <div id="view-loading" class="text-center py-5">
+        <div class="spinner-border text-primary" role="status">
+          <span class="visually-hidden">加载中…</span>
+        </div>
+        <p class="text-muted mt-3">正在加载分享内容…</p>
+      </div>
+
+      {# 内容区（读取成功后显示）：元信息 + 渲染模式切换 + 内容 #}
+      <div id="view-content" class="d-none">
+        <div class="d-flex flex-wrap gap-2 align-items-center text-muted small mb-3"
+             id="meta-bar">
+          <span class="badge text-bg-light border" id="meta-created"></span>
+          <span class="badge text-bg-light border" id="meta-expires"></span>
+          <span class="badge text-bg-light border" id="meta-views"></span>
+        </div>
+
+        {# 渲染模式手动切换兜底：自动识别不准时由用户指定 #}
+        <ul class="nav nav-tabs" id="mode-tabs" role="tablist">
+          <li class="nav-item">
+            <button type="button" class="nav-link" data-mode="text" role="tab">文本</button>
+          </li>
+          <li class="nav-item">
+            <button type="button" class="nav-link" data-mode="markdown" role="tab">Markdown</button>
+          </li>
+          <li class="nav-item">
+            <button type="button" class="nav-link" data-mode="code" role="tab">代码</button>
+          </li>
+        </ul>
+
+        <div class="card shadow-sm rounded-top-0">
+          <div class="card-body p-0">
+            <div id="content" class="share-content" role="tabpanel"></div>
+          </div>
+        </div>
+      </div>
+
+      {# 错误区（404/410 等）：标题与说明由 view.js 按 API 错误 type 渲染 #}
+      <div id="view-error" class="d-none text-center py-5">
+        <div class="display-5 mb-3" id="error-icon" aria-hidden="true"></div>
+        <h1 class="h4" id="error-title"></h1>
+        <p class="text-muted" id="error-detail"></p>
+        <a class="btn btn-primary mt-2" href="/">← 返回创建页</a>
+      </div>
+
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/highlight.min.js"></script>
+<script src="/static/vendor/dompurify.min.js"></script>
+<script src="/static/js/view.js"></script>
+{% endblock %}

@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-12 col-lg-8 col-xl-7">
+    <h1 class="h3 mb-1">创建分享</h1>
+    <p class="text-muted mb-4">
+      粘贴任意文本，生成分享链接与二维码。支持 Markdown 渲染与代码高亮（自动识别）。
+    </p>
+
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <form id="create-form" novalidate>
+          <div class="mb-3">
+            <label class="form-label" for="content">内容</label>
+            <textarea class="form-control" id="content" name="content" rows="12"
+                      placeholder="在此粘贴要分享的内容…" required></textarea>
+            <div class="form-text text-end" id="char-counter">0 / 100000</div>
+          </div>
+
+          <div class="row g-3 mb-3">
+            <div class="col-6">
+              <label class="form-label" for="expiry">有效期</label>
+              <select class="form-select" id="expiry" name="expiry">
+                <option value="1h">1 小时</option>
+                <option value="24h" selected>24 小时</option>
+                <option value="7d">7 天</option>
+                <option value="forever">永久</option>
+              </select>
+            </div>
+            <div class="col-6">
+              <label class="form-label" for="max-views">访问次数</label>
+              <select class="form-select" id="max-views" name="max_views">
+                <option value="" selected>无限</option>
+                <option value="1">仅 1 次</option>
+                <option value="5">5 次</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="alert alert-danger d-none" id="create-error" role="alert"></div>
+
+          <button type="submit" class="btn btn-primary w-100 py-2" id="submit-btn">创建分享</button>
+        </form>
+      </div>
+    </div>
+
+    {# 创建成功后的结果区：分享链接 + 一键复制 + 二维码 + 打开分享页（由 app.js 填充/显示） #}
+    <div class="card shadow-sm d-none" id="create-result">
+      <div class="card-body">
+        <h2 class="h5 mb-3">🎉 分享已创建</h2>
+        <div class="input-group mb-3">
+          <input type="text" class="form-control" id="share-link" readonly aria-label="分享链接">
+          <button class="btn btn-outline-secondary" type="button" id="copy-btn">复制链接</button>
+        </div>
+        <div class="d-flex align-items-center gap-3 flex-wrap">
+          <img id="qr-img" alt="分享二维码" class="qr-img" width="140" height="140">
+          <div>
+            <p class="text-muted small mb-2">
+              手机扫码或复制链接即可打开分享页。注意：访问次数一经消耗不可恢复。
+            </p>
+            <a class="btn btn-success" id="open-btn" href="#">打开分享页 →</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/app.js"></script>
+{% endblock %}

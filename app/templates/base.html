@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  {# 移动端优先：手机 + 电脑浏览器均可用（项目书红线） #}
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ page_title }}{% endblock %}</title>
+  {# 运行时零 CDN 依赖：全部前端资源由 /static/vendor/ 本地提供（M4 约定） #}
+  <link rel="stylesheet" href="/static/vendor/bootstrap.min.css">
+  {# 页面级样式（如 highlight 主题）：查看页专属资源放子模板，避免创建页多余请求 #}
+  {% block styles %}{% endblock %}
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="bg-light d-flex flex-column min-vh-100">
+
+  <nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm">
+    <div class="container">
+      <a class="navbar-brand fw-bold" href="/">
+        <span class="fs-4">📋</span> ClipShare
+      </a>
+      <span class="navbar-text d-none d-md-inline text-white-50">
+        轻量级云剪切板 · 匿名分享 · 有效期与次数控制
+      </span>
+    </div>
+  </nav>
+
+  <main class="container py-4 flex-grow-1">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="text-center text-muted small py-3 border-top bg-white">
+    <div class="container">
+      ClipShare — 匿名文本分享系统 · 内容由分享者提供，本服务不存储任何个人信息
+    </div>
+  </footer>
+
+  {# 脚本置于 body 末尾：CSP script-src 'self' 下禁止内联脚本，全部走静态文件 #}
+  <script src="/static/vendor/bootstrap.bundle.min.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

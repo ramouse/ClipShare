@@ -12,6 +12,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY app ./app
+COPY cli ./cli
 COPY tests ./tests
 
 # 国内网络默认走清华 PyPI 镜像加速；如需官方源：docker compose build --build-arg PIP_INDEX_URL=https://pypi.org/simple

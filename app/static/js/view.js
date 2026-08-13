@@ -28,6 +28,7 @@
   const metaCreated = document.getElementById("meta-created");
   const metaExpires = document.getElementById("meta-expires");
   const metaViews = document.getElementById("meta-views");
+  const metaEncrypted = document.getElementById("meta-encrypted");
   const modeTabs = document.querySelectorAll("#mode-tabs .nav-link");
   const contentEl = document.getElementById("content");
 
@@ -61,6 +62,19 @@
       icon: "🐢",
       title: "请求过于频繁",
       detail: "请求频率过高，请稍后再试。",
+    },
+    // M5 端到端加密：内容为密文标记串（ENC1: 前缀）时由前端处理
+    share_encrypted: {
+      icon: "🔒",
+      title: "分享已加密",
+      detail:
+        "该分享使用了端到端加密，内容与密钥均不经过服务器，只能保存密文。请使用包含密钥的完整链接访问（密钥位于链接 # 号之后），或联系分享者重新获取链接。",
+    },
+    key_invalid: {
+      icon: "🔑",
+      title: "密钥缺失或错误",
+      detail:
+        "无法用当前链接中的密钥解密内容。请确认复制的是分享时生成的完整链接（# 号之后的密钥没有丢失），或向分享者重新获取链接。",
     },
   };
 
@@ -269,6 +283,49 @@
   });
 
   /* ------------------------------------------------------------------ */
+  /* M5 端到端加密：从链接 fragment 取密钥并解密                           */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * 从 URL fragment（#k=<base64url(key)>）解析密钥。
+   * fragment 不随 HTTP 请求发送（也不会出现在 Referer 中），因此密钥只存在于
+   * 浏览器地址栏与页面内存，服务器永远拿不到。
+   * 返回 base64url 字符串；无密钥返回 null。
+   */
+  function readKeyFromHash() {
+    const m = /(?:^|&)k=([A-Za-z0-9_-]+)/.exec(location.hash.replace(/^#/, ""));
+    return m ? m[1] : null;
+  }
+
+  /** 解密成功：显示「已端到端解密」徽章。 */
+  function showEncryptedBadge() {
+    if (metaEncrypted) {
+      metaEncrypted.classList.remove("d-none");
+    }
+  }
+
+  /**
+   * 密文 → 明文（浏览器内解密，密钥来自链接 fragment）。
+   * 成功返回明文；密钥缺失/错误/密文损坏一律返回 null（由调用方渲染对应错误页）。
+   */
+  async function decryptShareContent(ciphertext) {
+    const keyB64 = readKeyFromHash();
+    if (!keyB64) {
+      showError(ERROR_MESSAGES.share_encrypted);
+      return null;
+    }
+    try {
+      const key = await ClipShareCrypto.importKeyFromBase64Url(keyB64);
+      const plaintext = await ClipShareCrypto.decryptContent(ciphertext, key);
+      showEncryptedBadge();
+      return plaintext;
+    } catch (err) {
+      showError(ERROR_MESSAGES.key_invalid);
+      return null;
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
   /* 主流程：唯一一次 API 请求                                            */
   /* ------------------------------------------------------------------ */
 
@@ -294,6 +351,14 @@
           // 防御：后端恒返回 JSON，此分支理论上不可达；避免 spinner 永久停留
           showError({ title: "响应异常", detail: "服务器返回了无法解析的响应。" });
           return;
+        }
+        // M5：内容是密文标记串 → 解密后再走既有类型识别渲染；类型识别永远作用于明文
+        if (ClipShareCrypto.isEncryptedContent(body.content)) {
+          const plaintext = await decryptShareContent(body.content);
+          if (plaintext === null) {
+            return; // 错误页已由 decryptShareContent 渲染（密钥缺失/错误）
+          }
+          body.content = plaintext;
         }
         showContent(body);
       } else {

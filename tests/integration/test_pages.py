@@ -34,6 +34,7 @@ STATIC_FILES = [
     "css/style.css",
     "js/app.js",
     "js/view.js",
+    "js/crypto.js",
 ]
 
 
@@ -85,6 +86,9 @@ def test_index_page_renders_form(client: TestClient) -> None:
     assert 'id="create-result"' in html
     assert 'id="qr-img"' in html
     assert 'id="copy-btn"' in html
+    # M5：端到端加密开关与提醒
+    assert 'id="encrypt-toggle"' in html
+    assert 'id="encrypt-warning"' in html
     # 响应式元信息（手机 + 电脑浏览器可用）
     assert 'name="viewport"' in html
     assert 'lang="zh-CN"' in html
@@ -104,6 +108,8 @@ def test_view_page_shell_for_any_code(client: TestClient) -> None:
     assert 'data-mode="code"' in html
     assert 'id="meta-expires"' in html
     assert 'id="meta-views"' in html
+    # M5：端到端解密徽章
+    assert 'id="meta-encrypted"' in html
 
 
 def test_view_page_shell_does_not_read_db(client: TestClient) -> None:

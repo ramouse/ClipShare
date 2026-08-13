@@ -26,6 +26,8 @@
           <span class="badge text-bg-light border" id="meta-created"></span>
           <span class="badge text-bg-light border" id="meta-expires"></span>
           <span class="badge text-bg-light border" id="meta-views"></span>
+          {# M5：端到端加密成功解密后显示（默认隐藏，由 view.js 控制） #}
+          <span class="badge text-bg-success d-none" id="meta-encrypted">🔒 已端到端解密</span>
         </div>
 
         {# 渲染模式手动切换兜底：自动识别不准时由用户指定 #}
@@ -65,5 +67,6 @@
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/highlight.min.js"></script>
 <script src="/static/vendor/dompurify.min.js"></script>
+<script src="/static/js/crypto.js"></script>
 <script src="/static/js/view.js"></script>
 {% endblock %}

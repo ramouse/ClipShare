@@ -5,6 +5,11 @@
   {# 移动端优先：手机 + 电脑浏览器均可用（项目书红线） #}
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{{ page_title }}{% endblock %}</title>
+  {# PWA（v0.2）：manifest / theme-color / 图标 —— 手机「添加到主屏幕」的安装信息 #}
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#0d6efd">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
   {# 运行时零 CDN 依赖：全部前端资源由 /static/vendor/ 本地提供（M4 约定） #}
   <link rel="stylesheet" href="/static/vendor/bootstrap.min.css">
   {# 页面级样式（如 highlight 主题）：查看页专属资源放子模板，避免创建页多余请求 #}
@@ -36,6 +41,8 @@
 
   {# 脚本置于 body 末尾：CSP script-src 'self' 下禁止内联脚本，全部走静态文件 #}
   <script src="/static/vendor/bootstrap.bundle.min.js"></script>
+  {# PWA（v0.2）：SW 注册入口（外部文件满足 CSP；内部 load 事件后才注册，不抢首屏） #}
+  <script src="/static/js/pwa.js"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

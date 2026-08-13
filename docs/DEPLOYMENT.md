@@ -1,6 +1,6 @@
 # ClipShare 生产部署手册（从零到上线）
 
-> 适用版本：M6 生产部署基础设施（docker-compose.prod.yml / conf/nginx.conf / scripts/deploy.sh / scripts/backup.sh）
+> 适用版本：M6 生产部署基础设施 + v0.2 文件分享/PWA（docker-compose.prod.yml / conf/nginx.conf / scripts/deploy.sh / scripts/backup.sh）
 > 目标读者：负责把系统部署到公网服务器的同学。本手册按「首次从零上线」顺序撰写，各章节可独立查阅。
 
 ## 0. 架构总览
@@ -13,12 +13,15 @@
                           │
                           ▼
               db:5432（PostgreSQL 16，持久卷 pgdata）
+              app/data/files（文件分享持久卷，绑定挂载宿主 ./data/files）
 ```
 
 - **只有 nginx 暴露宿主机端口**（80，443 待 HTTPS 后启用）；app/db 在 Docker 内部网络互访，公网不可直连数据库；
 - **生产镜像不挂载源码**：运行的是构建时的源码快照，更新代码 = 重建镜像；
 - **全部密钥在服务器 `.env`**：`docker-compose.prod.yml` 用 `${VAR:?错误信息}` 强制校验，缺失直接报错拒绝启动；
-- **项目名 `clipshare-prod`**：与开发环境（clipshare）物理隔离，本机同时跑两个环境互不影响。
+- **项目名 `clipshare-prod`**：与开发环境（clipshare）物理隔离，本机同时跑两个环境互不影响；
+- **文件分享卷（v0.2）**：宿主 `./data/files` 绑定挂载到容器 `/app/data/files`（`FILE_STORAGE_DIR`），
+  上传文件持久化于此；容器内固定 uid 1000，宿主目录必须归属 1000:1000（deploy.sh 自动处理，见 §4.1）。
 
 ## 1. 服务器选购与安全组
 
@@ -77,9 +80,17 @@ vim .env        # 逐项填写，见下方变量说明
 | `SHARE_MAX_CONTENT_LENGTH` | 否 | 单条分享长度上限（字符），默认 100000 |
 | `RATE_LIMIT_CREATE` | 否 | 创建接口限流，默认 `30/minute`（按 IP，内存瞬时计数） |
 | `RATE_LIMIT_READ` | 否 | 读取接口限流，默认 `60/minute` |
+| `FILE_MAX_SIZE` | 否 | 单文件上限（字节），默认 100MB；nginx 已配套 `client_max_body_size 110m`（§4.4） |
+| `FILE_ENCRYPT_MAX_SIZE` | 否 | 文件 E2E 加密上限（字节），默认 10MB（浏览器全内存加密的固有代价） |
+| `FILE_PREVIEW_MAX_SIZE` | 否 | 文本预览截断上限（字节），默认 200KB |
+| `FILE_STORAGE_DIR` | 否 | 文件落盘目录（容器内路径），默认 `/app/data/files`（§0） |
+| `RATE_LIMIT_UPLOAD` / `RATE_LIMIT_FILE_READ` / `RATE_LIMIT_FILE_DOWNLOAD` | 否 | 文件相关限流（独立预算与文本互不影响），默认 `30/minute` / `60/minute` / `60/minute` |
 
 > **安全红线**：`.env` 已被 `.gitignore` 排除（`.env.*` 全忽略，仅放行 `.env.prod.example` 模板），
 > 任何人不得把 `.env` 提交、转发或发到群里。泄露口令 = 数据库裸奔。
+>
+> **v0.2 升级注意**：已有服务器的 `.env` 缺少文件段变量时无需手工补——`docker-compose.prod.yml`
+> 对全部文件变量均带 `${VAR:-默认值}` 兜底，缺省即用默认值；若需自定义再追加对应行。
 
 ## 4. 部署
 
@@ -91,11 +102,37 @@ bash scripts/deploy.sh
 
 脚本自动完成 5 步（幂等，可重复执行）：
 
-1. `git pull` 更新代码；
+1. `git pull` 更新代码；**随后确保文件卷目录存在并归属 uid 1000**
+   （`mkdir -p data/files && chown -R 1000:1000 data/files`，v0.2；chown 需 root，
+   非 root 执行时脚本跳过并给出提示，容器内落盘报 Permission denied 时手动补执行）；
 2. 校验 `.env` 与 compose 配置（`docker compose config -q`，缺失变量在此步报错）；
 3. 构建生产镜像（`INSTALL_DEV=false`，无测试工具、无源码挂载）并 `up -d`；
+   **随后 `docker compose restart nginx`**（v0.2：nginx 配置只读挂载自仓库，
+   `up -d` 不感知 `conf/nginx.conf` 变更，必须显式 restart 让新配置生效）；
 4. 数据库迁移 `alembic upgrade head`（幂等，无新迁移时无操作）；
 5. 健康检查：轮询 `http://127.0.0.1/healthz` 直到返回 200。
+
+### 4.4 nginx 上传与超时配置（v0.2 文件分享配套）
+
+`conf/nginx.conf` 与文件分享相关的三处配置（改后必须重启 nginx——见 §4.1 第 3 步）：
+
+| 配置 | 值 | 说明 |
+|------|-----|------|
+| `client_max_body_size` | `110m` | 上传上限（100MB + 头部开销余量）；超过返回 413 |
+| `proxy_read_timeout` / `proxy_send_timeout` | `300s` | 低带宽大文件上传/下载超时（默认 60s 会中断慢速传输） |
+
+### 4.5 PWA 部署注意（v0.2）
+
+- PWA（可安装安卓端）依赖：`/manifest.webmanifest` 与 `/sw.js` 由应用路由下发（页面同源），
+  静态资源全部自研 + vendor 本地化——**无需任何外部 CDN/HTTPS 之外的新配置**；
+- 手机「添加到主屏幕」要求 **HTTPS**（localhost 除外）：生产用 §5 的 certbot 签发证书；
+  纯 IP + HTTP 时 Chrome 桌面可安装（localhost/127.0.0.1 豁免），安卓需域名 + HTTPS；
+- Service Worker 注册入口是 `/sw.js`（带 `Service-Worker-Allowed: /` 响应头，作用域覆盖全站），
+  `/static/sw.js` 是同一文件的静态副本（供测试断言与审计）；
+- SW 缓存策略红线：`/s/*` 与 `/api/*` 直连**绝不缓存**（访问计数与内容新鲜度语义）；
+  静态资源内容变更时递增 `app/static/sw.js` 的 `CACHE_VERSION`（旧缓存 activate 时自动清理）；
+- 新增/删除静态资源必须同步更新 `sw.js` 的 `PRECACHE_URLS` 手写清单——否则
+  `tests/e2e/pwa.test.js`（已接入 CI `npm run e2e`）逐个断言 200 会立即红灯（清单漂移防线）。
 
 ### 4.2 手工等价序列（调试/学习时用）
 
@@ -176,7 +213,14 @@ bash scripts/backup.sh            # 生成 clipshare-YYYYMMDD-HHMMSS.sql.gz，�
 bash scripts/backup.sh 14         # 自定义保留 14 份
 ```
 
+备份内容（v0.2 起两组，各按 `KEEP` 独立保留）：
+
+1. 数据库逻辑备份：`clipshare-*.sql.gz`（pg_dump + gzip，恢复见 §6.3）；
+2. 文件卷快照：`clipshare-files-*.tar.gz`（`./data/files` 存在且非空时打包，
+   `tar -czf -C data/files .` 取相对路径；目录为空时跳过并提示）。
+
 备份文件默认放在仓库同级目录 `clipshare-backups/`（可用 `BACKUP_DIR` 环境变量改到独立磁盘）。
+清理策略：SQL 备份与文件快照**分两组**各保留最近 `KEEP` 份（互不挤占名额）。
 
 ### 6.2 cron 自动备份（推荐）
 
@@ -194,7 +238,11 @@ docker compose -f docker-compose.prod.yml stop app
 # 2. 回放备份（将 BACKUP_FILE 换成目标备份文件）
 gunzip -c "$BACKUP_FILE" | docker compose -f docker-compose.prod.yml exec -T -e PGPASSWORD=数据库密码 db \
   psql -U 数据库用户 -d 数据库名
-# 3. 校验并重启
+# 3. 文件卷恢复（v0.2：文件分享数据，与 SQL 备份配套；先备份再恢复）
+mkdir -p data/files
+tar -xzf clipshare-files-20260813-023000.tar.gz -C data/files/
+chown -R 1000:1000 data/files        # 容器内固定 uid 1000，权限不符会写盘失败
+# 4. 校验并重启
 docker compose -f docker-compose.prod.yml start app
 ```
 
@@ -280,3 +328,4 @@ docker compose -f docker-compose.prod.yml run --rm app alembic downgrade <上一
 | 日期 | 内容 |
 |------|------|
 | 2026-08-13 | 初版：M6 前半（生产 compose、nginx 反代、部署/备份脚本、本手册） |
+| 2026-08-13 | v0.2：文件卷（data/files / uid 1000）、nginx 110m/300s、备份含文件快照分组清理、deploy.sh 建卷 chown + restart nginx、PWA 部署注意（§4.5） |

@@ -1,4 +1,4 @@
-"""M4 页面集成测试：页面 shell + 静态资源 + 安全头 + 端到端冒烟。
+"""M4 页面集成测试：页面 shell + 静态资源 + 安全头 + 端到端冒烟 + v0.2 PWA。
 
 前端 JS 行为（类型识别、XSS 消毒、错误页渲染）由代码审查 + 宿主机
 ``node --check`` 语法校验保证；本文件覆盖服务端契约：
@@ -6,7 +6,8 @@
 - /static 下 vendor 与自研资源均可访问（运行时零 CDN 依赖）；
 - 页面响应携带完整安全头（含 CSP）；
 - 端到端冒烟：POST 创建 → 提取 code → 页面 shell 可用，404/410 场景
-  断言「页面 shell 200 + API 错误 type 正确」。
+  断言「页面 shell 200 + API 错误 type 正确」；
+- v0.2 PWA：manifest / SW / 图标可访问，页面含 PWA 元信息且无内联脚本回归。
 """
 import re
 from collections.abc import Iterator
@@ -167,6 +168,59 @@ def test_page_security_headers(client: TestClient) -> None:
     assert "script-src 'self'" in csp
     assert "img-src 'self' data:" in csp
     assert "frame-ancestors 'none'" in csp
+
+
+def test_pwa_assets_served(client: TestClient) -> None:
+    """v0.2 PWA：manifest / SW（根路径与 /static 双入口）/ 三枚图标均可访问且非空。"""
+    for path in (
+        "/manifest.webmanifest",
+        "/sw.js",
+        "/static/sw.js",
+        "/static/icons/icon-192.png",
+        "/static/icons/icon-512.png",
+        "/static/icons/maskable-512.png",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200, f"{path} 返回 {response.status_code}"
+        assert len(response.content) > 0, f"{path} 内容为空"
+
+
+def test_manifest_content(client: TestClient) -> None:
+    """v0.2 PWA：manifest 字段契约（手机「添加到主屏幕」的安装信息）。"""
+    data = client.get("/manifest.webmanifest").json()
+    assert data["name"] == "ClipShare 云剪切板"
+    assert data["short_name"] == "ClipShare"
+    assert data["start_url"] == "/"
+    assert data["scope"] == "/"
+    assert data["display"] == "standalone"
+    assert data["background_color"] == "#ffffff"
+    assert data["theme_color"] == "#0d6efd"
+    purposes = {(icon["sizes"], icon.get("purpose", "any")) for icon in data["icons"]}
+    assert ("192x192", "any") in purposes
+    assert ("512x512", "any") in purposes
+    assert ("512x512", "maskable") in purposes
+
+
+def test_sw_service_worker_allowed_header(client: TestClient) -> None:
+    """v0.2 PWA：/sw.js 必须带 Service-Worker-Allowed 头（否则作用域仅限 /static/，离线壳失效）。"""
+    response = client.get("/sw.js")
+    assert response.status_code == 200
+    assert response.headers["service-worker-allowed"] == "/"
+
+
+def test_pwa_meta_in_pages(client: TestClient) -> None:
+    """v0.2 PWA：base.html 含 manifest link / theme-color / 图标 / pwa.js 注册脚本，
+    且新增脚本仍带 src（CSP script-src 'self' 无内联回归）。"""
+    html = client.get("/").text
+    assert 'rel="manifest"' in html
+    assert 'href="/manifest.webmanifest"' in html
+    assert 'name="theme-color"' in html
+    assert 'content="#0d6efd"' in html
+    assert 'rel="icon"' in html
+    assert 'rel="apple-touch-icon"' in html
+    assert 'src="/static/js/pwa.js"' in html
+    # 回归：view 页同样继承 base.html 的 PWA 注册脚本
+    assert 'src="/static/js/pwa.js"' in client.get("/s/abc123").text
 
 
 def test_e2e_smoke_create_then_view_page(client: TestClient) -> None:

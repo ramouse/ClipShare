@@ -14,11 +14,13 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.templating import Jinja2Templates
-from starlette.responses import HTMLResponse
+from starlette.responses import FileResponse, HTMLResponse
 
 # 模板目录固定为 app/templates：用相对于本文件的路径解析，
 # 不依赖进程工作目录（容器内 uvicorn 与测试的 cwd 可能不同）
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent.parent / "templates"
+# 静态资源目录：manifest 与 SW 由同源路由提供（PWA 要求与页面同源）
+STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
@@ -51,4 +53,34 @@ async def view(request: Request, code: str) -> HTMLResponse:
         request=request,
         name="view.html",
         context={"page_title": "ClipShare — 查看分享", "code": code},
+    )
+
+
+@router.get(
+    "/manifest.webmanifest",
+    response_class=FileResponse,
+    summary="PWA 应用清单",
+    include_in_schema=False,
+)
+async def manifest() -> FileResponse:
+    """Web App Manifest：站点根路径（规范要求与页面同源），供手机安装 PWA。"""
+    return FileResponse(STATIC_DIR / "manifest.webmanifest", media_type="application/manifest+json")
+
+
+@router.get(
+    "/sw.js",
+    response_class=FileResponse,
+    summary="Service Worker 注册入口",
+    include_in_schema=False,
+)
+async def service_worker() -> FileResponse:
+    """Service Worker 注册入口：带 Service-Worker-Allowed: / 响应头。
+
+    防御性保证 SW 作用域覆盖全站（当前注册入口在根路径、默认作用域本就是 "/"；
+    若将来注册入口改到 /static/ 下，无此头则作用域被收窄到 /static/，离线壳失效）。
+    """
+    return FileResponse(
+        STATIC_DIR / "sw.js",
+        media_type="text/javascript",
+        headers={"Service-Worker-Allowed": "/"},
     )

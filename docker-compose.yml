@@ -10,7 +10,8 @@ services:
         INSTALL_DEV: "true"
     environment:
       DATABASE_URL: postgresql+psycopg://clipshare:clipshare@db:5432/clipshare
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # --no-access-log：不记录客户端 IP:port（隐私红线）；应用层 structlog 只记短码与状态
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --no-access-log
     volumes:
       - .:/app   # 开发热挂载：源码改动后 uvicorn --reload 自动生效，无需重建镜像
     ports:

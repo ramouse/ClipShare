@@ -21,4 +21,7 @@ def db_session() -> Iterator[Session]:
     with SessionLocal() as session:
         yield session
     with engine.begin() as conn:
+        # 清空顺序：先业务表再短码中心表（中心表行引用业务表语义）
         conn.execute(text("DELETE FROM shares"))
+        conn.execute(text("DELETE FROM share_files"))
+        conn.execute(text("DELETE FROM shortcodes"))

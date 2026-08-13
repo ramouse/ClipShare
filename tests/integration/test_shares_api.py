@@ -28,10 +28,16 @@ def _ensure_tables() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _clean_shares() -> Iterator[None]:
-    """每个用例结束后清空 shares 表，保证用例间数据互不干扰。"""
+    """每个用例结束后清空业务表与短码中心表，保证用例间数据互不干扰。
+
+    顺序：先业务表（shares/share_files）后中心表（shortcodes），
+    与 tests/integration/conftest.py 的 db_session 清理保持一致。
+    """
     yield
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM shares"))
+        conn.execute(text("DELETE FROM share_files"))
+        conn.execute(text("DELETE FROM shortcodes"))
 
 
 @pytest.fixture()
@@ -47,6 +53,16 @@ def _create_share(client: TestClient, content: str = "hello", **overrides: objec
     response = client.post(f"{API_PREFIX}/shares", json=payload)
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def test_create_share_registers_shortcode(client: TestClient) -> None:
+    """短码双写：创建文本分享后，中心表出现 kind='share' 的登记行（跨类型唯一兜底）。"""
+    body = _create_share(client)
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT kind FROM shortcodes WHERE code = :code"), {"code": body["code"]}
+        ).scalar()
+    assert row == "share"
 
 
 def test_create_share_success(client: TestClient) -> None:

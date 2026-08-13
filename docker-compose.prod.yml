@@ -76,8 +76,8 @@ services:
       - ./conf/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
       - "80:80"    # 唯一暴露到宿主机/公网的端口；app/db 均不暴露（按需原则）
-      # HTTPS 端口：certbot --nginx 签发证书后启用（取消下一行注释并执行 nginx -s reload，
-      # 详见 docs/DEPLOYMENT.md §5）
+      # HTTPS 端口：certbot certonly --webroot 签发证书后启用（取消下一行注释，
+      # 并按 docs/DEPLOYMENT.md §5 挂载证书/webroot 卷后执行 nginx -s reload）
       # - "443:443"
     depends_on:
       app:

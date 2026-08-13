@@ -10,6 +10,8 @@ dist/
 .env
 .env.*
 !.env.example
+# M6：生产环境变量模板需入库（.env.prod 等真实文件仍被忽略）
+!.env.prod.example
 .venv/
 venv/
 

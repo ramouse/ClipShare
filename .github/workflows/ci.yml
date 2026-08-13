@@ -20,7 +20,7 @@ jobs:
       - name: Ruff
         run: ruff check .
       - name: MyPy
-        run: mypy app
+        run: mypy app cli
 
   test:
     name: Tests (PostgreSQL)
@@ -52,6 +52,9 @@ jobs:
           DATABASE_URL: postgresql+psycopg://clipshare:clipshare@localhost:5432/clipshare
         run: pytest
 
+  # M7 计划（开发方案 §6 待办「M6/M7 jsdom 冒烟接入 CI」，实现留 M7）：
+  # 前端冒烟 tests/e2e/frontend_smoke.js 当前依赖宿主机手动执行（M5），
+  # 需引入 package.json（jsdom 依赖）并新增本 job：build 通过后运行前端冒烟。
   build:
     name: Build Docker image
     runs-on: ubuntu-latest

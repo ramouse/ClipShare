@@ -13,7 +13,12 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY app ./app
 COPY cli ./cli
-COPY tests ./tests
+# 注：tests 不入镜像——dev 环境靠 compose 源码热挂载运行 pytest；
+# 生产镜像按最小攻击面原则不含测试代码（.dockerignore 同步排除 tests）
+# M6：alembic 迁移必需文件必须打进镜像——生产容器无源码挂载，
+# deploy.sh 在容器内执行 alembic upgrade head（dev 环境靠热挂载拿到这些文件，prod 靠 COPY）
+COPY alembic.ini ./
+COPY migrations ./migrations
 
 # 国内网络默认走清华 PyPI 镜像加速；如需官方源：docker compose build --build-arg PIP_INDEX_URL=https://pypi.org/simple
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple

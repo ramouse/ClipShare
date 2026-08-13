@@ -3,7 +3,7 @@
 ## 项目概述
 这是一个 Python + FastAPI 的云剪切板分享系统（pastebin 类）项目，比特工场 2026 暑期技能提升项目。
 目标：匿名文本分享 + 有效期/访问次数控制 + 自研创新点（E2E 加密、CLI 工具），按项目书特等奖标准交付。
-当前阶段：M1-M4 已完成（脚手架/领域与数据层/REST API/Web 前端），M5 创新点（E2E 加密 + CLI）开发中，后续部署（M6）与交付（M7）。
+当前阶段：M1-M5 已完成（脚手架/领域与数据层/REST API/Web 前端/E2E 加密+CLI），M6 部署准备中，M7 文档交付收尾。
 
 ## 技术栈
 - 运行时：Python 3.12（全部在 Docker 容器内运行，本机无需装 Python）
@@ -66,7 +66,7 @@ tests/
 docker compose up -d --build           # 启动开发环境（http://localhost:8000）
 docker compose run --rm app pytest     # 运行测试
 docker compose run --rm app ruff check .   # 代码检查
-docker compose run --rm app mypy app   # 类型检查
+docker compose run --rm app mypy app cli   # 类型检查（app 与 cli 两个包）
 
 ## 测试接口
 docker compose run --rm app pytest         # 全部测试

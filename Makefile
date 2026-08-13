@@ -9,7 +9,7 @@ down:          ## 停止并移除容器
 
 lint:          ## 代码检查（ruff + mypy，容器内执行）
 	docker compose run --rm app ruff check .
-	docker compose run --rm app mypy app
+	docker compose run --rm app mypy app cli
 
 format:        ## 自动格式化（容器内执行）
 	docker compose run --rm app ruff format .

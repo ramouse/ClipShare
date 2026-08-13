@@ -46,6 +46,7 @@ tests/
 - HTTP 状态码语义准确：创建成功 201、参数错误 422、资源不存在 404
 - 分层依赖单向：api → services → domain，禁止路由文件直接操作数据库
 - 每个路由文件只处理一种资源
+- 时间约定：全链路统一 naive UTC（应用与 DB 容器均 UTC 时钟），禁止混用 aware datetime
 - Commit 遵循 Conventional Commits，格式 `<type>(<scope>): <subject>`：
   - type：feat / fix / refactor / test / docs / chore / ci
   - scope：模块号（M1–M7）或分层（api / domain / db）

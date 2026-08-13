@@ -17,8 +17,9 @@ COPY tests ./tests
 # 国内网络默认走清华 PyPI 镜像加速；如需官方源：docker compose build --build-arg PIP_INDEX_URL=https://pypi.org/simple
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG INSTALL_DEV=false
+# dev 镜像用可编辑安装（-e）：与热挂载源码实时同步；prod 镜像用常规安装（源码快照）
 RUN pip install --upgrade pip -i "$PIP_INDEX_URL" \
-    && if [ "$INSTALL_DEV" = "true" ]; then pip install ".[dev]" -i "$PIP_INDEX_URL"; else pip install . -i "$PIP_INDEX_URL"; fi \
+    && if [ "$INSTALL_DEV" = "true" ]; then pip install -e ".[dev]" -i "$PIP_INDEX_URL"; else pip install . -i "$PIP_INDEX_URL"; fi \
     && chown -R app:app /app
 
 USER app

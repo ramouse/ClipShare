@@ -32,7 +32,9 @@ cd "$APP_DIR"
 [ -f .env ] || { echo "错误：缺少 .env —— 备份终止" >&2; exit 1; }
 
 # 从 .env 读取数据库连接信息（单行 KEY=VALUE 格式；值含 # 或引号时不适用，请保持 .env 为简单格式）
-get_env() { grep "^$1=" .env | head -1 | cut -d= -f2-; }
+# 注意：pipefail 下 grep 未命中会返回 1 直接杀死脚本，必须 || true 兜底，
+# 让下方「变量缺失」的友好报错路径生效（2026-08-13 生产实测踩坑）
+get_env() { grep "^$1=" .env | head -1 | cut -d= -f2- || true; }
 PGUSER="$(get_env POSTGRES_USER)"
 PGDB="$(get_env POSTGRES_DB)"
 PGPASSWORD="$(get_env POSTGRES_PASSWORD)"

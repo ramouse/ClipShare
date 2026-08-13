@@ -81,8 +81,9 @@ fi
 #  不匹配 clipshare-files-*.tar.gz，各自独立计数）
 for PATTERN in "clipshare-*.sql.gz" "clipshare-files-*.tar.gz"; do
     # pipefail 陷阱：ls 无匹配文件时退出码 2 会直接杀死脚本（与 get_env 同款，
-    # 生产实测踩坑），必须 || true 兜底让"无备份可清理"成为正常路径
-    COUNT=$(ls -1 "$BACKUP_DIR"/$PATTERN 2>/dev/null || true | wc -l)
+    # 生产实测踩坑）；|| true 必须放在整条管道末尾——放中间会破坏数据流
+    # （COUNT 变成文件名列表导致整数比较报错，2026-08-13 生产二次踩坑）
+    COUNT=$(ls -1 "$BACKUP_DIR"/$PATTERN 2>/dev/null | wc -l || true)
     if [ "$COUNT" -gt "$KEEP" ]; then
         ls -1t "$BACKUP_DIR"/$PATTERN | tail -n +$((KEEP + 1)) | while IFS= read -r old; do
             echo "[清理] 删除过期备份：$old"
@@ -90,8 +91,8 @@ for PATTERN in "clipshare-*.sql.gz" "clipshare-files-*.tar.gz"; do
         done
     fi
 done
-SQL_COUNT=$(ls -1 "$BACKUP_DIR"/clipshare-*.sql.gz 2>/dev/null || true | wc -l)
-FILES_COUNT=$(ls -1 "$BACKUP_DIR"/clipshare-files-*.tar.gz 2>/dev/null || true | wc -l)
+SQL_COUNT=$(ls -1 "$BACKUP_DIR"/clipshare-*.sql.gz 2>/dev/null | wc -l || true)
+FILES_COUNT=$(ls -1 "$BACKUP_DIR"/clipshare-files-*.tar.gz 2>/dev/null | wc -l || true)
 echo "[备份] 结束：$SQL_COUNT 份 SQL 备份 + $FILES_COUNT 份文件快照，各组保留上限 $KEEP 份"
 
 # =============================================================================

@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "轻量级云剪切板分享系统：匿名文本分享，支持有效期与访问次数控制"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 authors = [{ name = "NAME" }]
 dependencies = [
     "fastapi>=0.115",
@@ -38,7 +38,7 @@ testpaths = ["tests"]
 addopts = "-q --cov=app --cov-report=term-missing"
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 100
 extend-exclude = ["migrations"]
 
@@ -47,6 +47,6 @@ select = ["E", "F", "I", "UP", "B", "SIM", "C4", "S"]
 ignore = ["S101"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]

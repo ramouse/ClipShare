@@ -54,7 +54,7 @@ tests/
   - 每个模块原子提交，保证 git log 可完整追溯开发过程
 
 ## 禁止事项
-- 不用 Python 3.8 兼容写法，按 3.11+ 标准写（如 `list[str]` 而非 `List[str]`）
+- 不用旧版兼容写法，按 3.12 标准写（如 `list[str]` 而非 `List[str]`）
 - 禁止在 async 路由里放阻塞调用（DB 访问走同步 def 路由或线程池）
 - 禁止将用户输入直接 innerHTML 渲染（必须转义 / DOMPurify 消毒）
 - 禁止用自增 ID 作分享链接（用 secrets 随机 Base62 短码）

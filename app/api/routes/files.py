@@ -7,30 +7,37 @@ file.read() 全量读入内存；下载经 Starlette FileResponse 流式输出�
 from pathlib import Path
 from typing import Literal
 
+import structlog
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.api.params import IdempotencyKeyHeader, ShortcodePath
 from app.core.config import get_settings
 from app.core.errors import (
     ShareFileContentMissingError,
+    ShareFileEncryptNotAvailableError,
     ShareFilePreviewNotAvailableError,
     ShareFileTypeNotAllowedError,
     ShareFileValidationError,
+    problem_responses,
 )
 from app.core.security import limiter
 from app.core.time import utcnow
+from app.db.models import ShareFile
 from app.domain.access import remaining_views
+from app.domain.enc1 import Enc1EnvelopeError, encrypted_plaintext_size_stream
 from app.domain.expiry import Expiry
 from app.domain.filename import sanitize_filename
 from app.schemas.file import FileCreatedResponse, FileReadResponse
-from app.services import file_service
+from app.services import file_service, idempotency_service
 from app.services.file_storage import FileStorage
 
 router = APIRouter(prefix="/files", tags=["files"])
 
 settings = get_settings()
+logger = structlog.get_logger(__name__)
 
 
 def _get_storage() -> FileStorage:
@@ -69,51 +76,8 @@ def _parse_max_views(raw: str) -> int | None:
     raise ShareFileValidationError("max_views 仅支持 1 或 5（留空表示不限次数）")
 
 
-@router.post("", status_code=201, response_model=FileCreatedResponse, summary="上传文件")
-@limiter.limit(settings.rate_limit_upload)
-def upload_file(
-    request: Request,
-    file: UploadFile = File(...),
-    expiry: Literal["1h", "24h", "7d", "forever"] = Form("24h"),
-    max_views: str = Form(""),
-    encrypted: bool = Form(False),
-    db: Session = Depends(get_db),
-) -> FileCreatedResponse:
-    """流式上传文件：净化文件名 → 白名单 415 → 参数校验 422 → 流式落盘。
-
-    落盘超限 413 由存储层中断并自清理半成品；服务层加密上限兜底 422 时
-    路由补偿删除已落盘文件——任何异常路径都保证磁盘无孤儿文件。
-    """
-    original_name = sanitize_filename(file.filename or "")
-    ext = _file_extension(original_name)
-    if ext not in settings.file_allowed_extensions_set:
-        raise ShareFileTypeNotAllowedError(f"扩展名「{ext or '无'}」不在允许白名单内")
-    expiry_value = Expiry(expiry)
-    max_views_value = _parse_max_views(max_views)
-
-    storage = _get_storage()
-    stored_name: str | None = None
-    try:
-        stored_name = storage.save_streamed(file.file, max_size=settings.file_max_size)
-        # 大小从已落盘的文件对象取：仅 seek 计数，不读取内容进内存（流式红线）
-        file.file.seek(0, 2)
-        size_bytes = file.file.tell()
-        record = file_service.create_file_share(
-            db,
-            original_name=original_name,
-            stored_name=stored_name,
-            size_bytes=size_bytes,
-            content_type=file.content_type or "application/octet-stream",
-            encrypted=encrypted,
-            expiry=expiry_value,
-            max_views=max_views_value,
-            now=utcnow(),
-        )
-    except Exception:
-        # 任何异常路径（含加密超限 422、短码冲突耗尽 500）：补偿删除已落盘文件
-        if stored_name is not None:
-            storage.delete(stored_name)
-        raise
+def _created_response(record: ShareFile) -> FileCreatedResponse:
+    """把首创与幂等重放统一映射为冻结响应。"""
     return FileCreatedResponse(
         code=record.code,
         url=file_service.file_url(record.code, settings.public_base_url),
@@ -126,9 +90,189 @@ def upload_file(
     )
 
 
-@router.get("/{code}", response_model=FileReadResponse, summary="读取文件元数据")
+def _delete_staged_file(storage: FileStorage, stored_name: str) -> None:
+    """尽力删除尚未进入提交阶段的临时文件，且不掩盖原始业务异常。"""
+    try:
+        storage.delete(stored_name)
+    except Exception as exc:
+        # stored_name 是系统随机值，但仍不写入日志；异常文本也可能含本机路径。
+        logger.error("staged_file_cleanup_failed", error_type=type(exc).__name__)
+
+
+@router.post(
+    "",
+    status_code=201,
+    response_model=FileCreatedResponse,
+    summary="上传文件",
+    operation_id="uploadFile",
+    responses={
+        201: {
+            "description": "上传成功或幂等重放",
+            "headers": {
+                "Idempotency-Replayed": {
+                    "description": "携带幂等键时，true 表示返回既有结果",
+                    "schema": {"type": "boolean"},
+                }
+            },
+        },
+        **problem_responses(400, 409, 413, 415, 422, 429, 500),
+    },
+    openapi_extra={
+        "x-clipshare-consumes-view": False,
+        "x-clipshare-auto-retry": "idempotency-key",
+        "x-clipshare-max-upload-bytes": 104857600,
+        "x-clipshare-max-encrypted-plaintext-bytes": 10485760,
+        "x-clipshare-max-encrypted-marker-chars": 16777216,
+    },
+)
+@limiter.limit(settings.rate_limit_upload)
+def upload_file(
+    request: Request,
+    response: Response,
+    file: UploadFile = File(...),
+    expiry: Literal["1h", "24h", "7d", "forever"] = Form("24h"),
+    max_views: str = Form(""),
+    encrypted: bool = Form(False),
+    idempotency_key: IdempotencyKeyHeader = None,
+    db: Session = Depends(get_db),
+) -> FileCreatedResponse:
+    """流式上传文件：净化文件名 → 白名单 415 → 参数校验 422 → 流式落盘。
+
+    落盘超限 413 由存储层中断并自清理半成品；服务层加密上限兜底 422 时
+    路由在进入数据库提交前失败时补偿删除已落盘文件。提交一旦开始，其结果可能
+    因连接中断而无法确认；此时优先保留文件供后续引用核验/回收，绝不能误删一个
+    事实上已经提交的数据库记录所引用的内容。
+    """
+    original_name = sanitize_filename(file.filename or "")
+    ext = _file_extension(original_name)
+    if ext not in settings.file_allowed_extensions_set:
+        raise ShareFileTypeNotAllowedError(f"扩展名「{ext or '无'}」不在允许白名单内")
+    expiry_value = Expiry(expiry)
+    max_views_value = _parse_max_views(max_views)
+    if idempotency_key is not None:
+        idempotency_service.validate_key(idempotency_key)
+
+    storage = _get_storage()
+    stored_name: str | None = None
+    commit_attempted = False
+    try:
+        saved = storage.save_streamed_with_digest(file.file, max_size=settings.file_max_size)
+        stored_name = saved.stored_name
+        size_bytes = saved.size_bytes
+        now = utcnow()
+        encrypted_plaintext_size: int | None = None
+        if encrypted:
+            try:
+                with storage.path(stored_name).open("rb") as encrypted_stream:
+                    encrypted_plaintext_size = encrypted_plaintext_size_stream(encrypted_stream)
+            except Enc1EnvelopeError as exc:
+                raise ShareFileEncryptNotAvailableError(
+                    f"encrypted=true 的上传体不是合法 ENC1：{exc}"
+                ) from exc
+
+        if idempotency_key is not None:
+            request_hash = idempotency_service.canonical_request_hash(
+                {
+                    "content_type": file.content_type or "application/octet-stream",
+                    "encrypted": encrypted,
+                    "expiry": expiry_value.value,
+                    "file_sha256": saved.sha256,
+                    "max_views": max_views_value,
+                    "original_name": original_name,
+                    "size_bytes": size_bytes,
+                }
+            )
+            with idempotency_service.locked_request(
+                db,
+                operation="upload_file",
+                key=idempotency_key,
+                request_hash=request_hash,
+                now=now,
+            ) as existing:
+                if existing is not None:
+                    record = file_service.get_file_for_replay(
+                        db, code=existing.resource_code
+                    )
+                    result = _created_response(record)
+                    _delete_staged_file(storage, stored_name)
+                    stored_name = None
+                    db.commit()
+                    response.headers["Idempotency-Replayed"] = "true"
+                    return result
+                record = file_service.create_file_share(
+                    db,
+                    original_name=original_name,
+                    stored_name=stored_name,
+                    size_bytes=size_bytes,
+                    content_type=file.content_type or "application/octet-stream",
+                    encrypted=encrypted,
+                    expiry=expiry_value,
+                    max_views=max_views_value,
+                    now=now,
+                    encrypted_plaintext_size=encrypted_plaintext_size,
+                )
+                idempotency_service.store_result(
+                    db,
+                    operation="upload_file",
+                    key=idempotency_key,
+                    request_hash=request_hash,
+                    resource_kind="file",
+                    resource_code=record.code,
+                    now=now,
+                )
+                commit_attempted = True
+                db.commit()
+                # 数据库资源与幂等记录已原子提交；后续响应映射即使异常，也不能
+                # 再把已提交记录对应的文件当作“未提交临时文件”补偿删除。
+                stored_name = None
+                response.headers["Idempotency-Replayed"] = "false"
+                return _created_response(record)
+
+        record = file_service.create_file_share(
+            db,
+            original_name=original_name,
+            stored_name=stored_name,
+            size_bytes=size_bytes,
+            content_type=file.content_type or "application/octet-stream",
+            encrypted=encrypted,
+            expiry=expiry_value,
+            max_views=max_views_value,
+            now=now,
+            encrypted_plaintext_size=encrypted_plaintext_size,
+        )
+        commit_attempted = True
+        db.commit()
+        # commit 正常返回后记录已确定引用该文件；后续响应映射失败也不得补偿删除。
+        stored_name = None
+    except Exception as exc:
+        if stored_name is not None and not commit_attempted:
+            # 仅提交前失败可以确认文件未被数据库引用，因此允许同步补偿删除。
+            _delete_staged_file(storage, stored_name)
+        elif stored_name is not None:
+            # commit 可能已在服务端成功、仅确认响应丢失。保留文件比制造悬空 DB
+            # 引用更安全；独立维护任务可在核对无引用后回收真正的孤儿文件。
+            logger.error(
+                "upload_commit_outcome_unknown", error_type=type(exc).__name__
+            )
+        raise
+    return _created_response(record)
+
+
+@router.get(
+    "/{code}",
+    response_model=FileReadResponse,
+    summary="读取文件元数据",
+    operation_id="getFileMetadata",
+    responses=problem_responses(404, 410, 422, 429, 500),
+    openapi_extra={
+        "x-clipshare-consumes-view": False,
+        "x-clipshare-auto-retry": "safe",
+    },
+)
 @limiter.limit(settings.rate_limit_file_read)
-def get_file_meta(request: Request, code: str, db: Session = Depends(get_db)) -> FileReadResponse:
+def get_file_meta(
+    request: Request, code: ShortcodePath, db: Session = Depends(get_db)
+) -> FileReadResponse:
     """文件元数据：不消耗预览/下载次数（与文本分享二维码同语义）。
 
     不存在 404；已过期 410（服务层顺带懒删磁盘文件）。
@@ -153,9 +297,27 @@ def get_file_meta(request: Request, code: str, db: Session = Depends(get_db)) ->
     )
 
 
-@router.get("/{code}/preview", response_class=Response, summary="预览文件内容")
+@router.get(
+    "/{code}/preview",
+    response_class=Response,
+    summary="预览文件内容",
+    operation_id="previewFile",
+    responses={
+        200: {
+            "description": "UTF-8 文本预览",
+            "content": {"text/plain": {"schema": {"type": "string"}}},
+        },
+        **problem_responses(404, 410, 415, 422, 429, 500),
+    },
+    openapi_extra={
+        "x-clipshare-consumes-view": True,
+        "x-clipshare-auto-retry": "forbidden",
+    },
+)
 @limiter.limit(settings.rate_limit_file_read)
-def preview_file(request: Request, code: str, db: Session = Depends(get_db)) -> Response:
+def preview_file(
+    request: Request, code: ShortcodePath, db: Session = Depends(get_db)
+) -> Response:
     """文本预览：返回文件头部（最多 file_preview_max_size 字节，截断读）。
 
     判定顺序：元数据（404/410，不消耗）→ 可预览性（415，不消耗）→
@@ -187,9 +349,37 @@ def preview_file(request: Request, code: str, db: Session = Depends(get_db)) -> 
     return Response(content=preview_bytes, media_type="text/plain")
 
 
-@router.get("/{code}/download", response_class=FileResponse, summary="下载文件")
+@router.get(
+    "/{code}/download",
+    response_class=FileResponse,
+    summary="下载文件",
+    operation_id="downloadFile",
+    responses={
+        200: {
+            "description": "文件二进制流",
+            "headers": {
+                "Content-Disposition": {
+                    "description": "RFC 5987 编码的原始下载文件名",
+                    "schema": {"type": "string"},
+                }
+            },
+            "content": {
+                "application/octet-stream": {
+                    "schema": {"type": "string", "format": "binary"}
+                }
+            },
+        },
+        **problem_responses(404, 410, 422, 429, 500),
+    },
+    openapi_extra={
+        "x-clipshare-consumes-view": True,
+        "x-clipshare-auto-retry": "forbidden",
+    },
+)
 @limiter.limit(settings.rate_limit_file_download)
-def download_file(request: Request, code: str, db: Session = Depends(get_db)) -> FileResponse:
+def download_file(
+    request: Request, code: ShortcodePath, db: Session = Depends(get_db)
+) -> FileResponse:
     """下载文件：消耗一次下载计数，FileResponse 流式输出。
 
     中文文件名经 RFC 5987 filename* 编码（Starlette 内建处理）；

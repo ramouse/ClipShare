@@ -8,6 +8,11 @@ router = APIRouter(tags=["health"])
     "/healthz",
     summary="存活检查",
     description="返回服务存活状态，供容器健康检查与监控系统使用。",
+    operation_id="healthCheck",
+    openapi_extra={
+        "x-clipshare-consumes-view": False,
+        "x-clipshare-auto-retry": "safe",
+    },
 )
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}

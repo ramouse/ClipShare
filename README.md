@@ -15,7 +15,7 @@
 - **文件分享（v0.2）**：上传代码/文档/截图等文件（上限 100MB），全链路流式传输；≤10MB 支持 E2E 加密；文本预览 / 下载 / 过期懒删
 - **安卓 PWA（v0.2）**：可安装到主屏幕、独立窗口打开，离线可用首页壳（静态资源缓存）
 - **CLI 快速分享工具**：`clipshare send` / `clipshare upload` / `clipshare get`，终端即可分享与读取
-- **企业级工程实践**：三层测试（155 用例）+ ruff + mypy strict + GitHub Actions CI + Docker 一键部署
+- **企业级工程实践**：176 项 Python 测试 + 126 项 Node 浏览器/API E2E + 专用目标守卫 + ruff + mypy strict + GitHub Actions CI + Docker 一键部署
 
 ## 技术栈
 
@@ -89,21 +89,29 @@ clipshare get https://paste.example.com/s/AbCdEf
 
 ## 开发
 
-```bash
-docker compose run --rm app pytest         # 测试（三层：单元/集成/E2E）
-docker compose run --rm app ruff check .   # 代码检查
-docker compose run --rm app mypy app cli   # 类型检查（strict）
-docker compose run --rm app ruff format .  # 格式化
-docker compose run --rm app alembic check  # 迁移与模型一致性检查
+`v0.3-G0` 测试隔离门已于 2026-08-23 验收通过。所有测试必须从唯一入口运行；禁止直接执行宿主 `pytest`、`npm run e2e` 或复用开发/生产数据库：
 
-# 前端冒烟（宿主机，需 Node ≥ 20 且服务器运行中）
-npm install
-npm run e2e     # jsdom 前端冒烟 + 端到端加密 E2E
+```powershell
+# 快速验证双语言守卫及危险目标拒绝策略
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-sandbox.ps1 -Mode Guard
+
+# 完整执行迁移、Ruff、mypy、pytest 和真实沙盒 HTTP E2E
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-sandbox.ps1 -Mode Full
+
+# Windows/Android 合约测试：首次准备固定容器，后续只同步代码并离线执行
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-clients.ps1 -Mode Clients
 ```
+
+脚本使用随机 `clipshare-g0-*` 项目、内部 Docker 网络、临时数据库和仓库内 `.sandbox/<run-id>` 运行目录；不挂载 `clipshare_pgdata`，不映射宿主端口，不执行全局 `prune`。退出时精确清理本次资源并核对运行前后 Docker 库存；只保留已被 `.gitignore` 排除的日志与证据。详见 [G0 验收记录](docs/依据/v0.3-G0-测试沙盒验收记录.md) 和 [客户端开发实施方案](docs/客户端开发实施方案.md) §7。
+
+客户端入口固定复用 `clipshare-test-dotnet`、`clipshare-test-kotlin`。两个容器都以
+`network=none` 执行测试，每轮只更新容器内 `/work/current`，完成后停止；只有基础镜像、
+Dockerfile 或工具链版本变化时才显式传入 `-Rebuild`。该入口不会启动或修改开发用
+`clipshare-app-1`、`clipshare-db-1`，也不会操作其他项目容器。
 
 ## 部署
 
-> **当前状态**：✅ 已部署上线 — **http://47.120.13.250**（阿里云 Ubuntu 22.04，Nginx + Docker 生产环境，健康检查通过）。部署手册见下方链接。
+> **现有 Web/CLI v0.2**：仓库文档记录的部署地址为 **http://47.120.13.250**（阿里云 Ubuntu 22.04，Nginx + Docker）。本轮未访问或变更该生产环境；该地址不代表 v0.3 Windows/Android 客户端已上线。原生客户端 Release 必须使用受信任 HTTPS，并在 `v0.3-R1` 全部门禁通过后才能发布。
 
 生产部署（Nginx 反向代理 + HTTPS + 备份）见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
@@ -115,7 +123,11 @@ npm run e2e     # jsdom 前端冒烟 + 端到端加密 E2E
 - 开发心得：[docs/开发心得.md](docs/开发心得.md)
 - 成员贡献：[docs/成员贡献说明.md](docs/成员贡献说明.md)
 - 演示视频脚本：[docs/演示视频脚本.md](docs/演示视频脚本.md)
-- 学习手册（逐模块技术要点与踩坑记录，位于项目外目录）：`clipshare-docs/学习手册/M1～M7`
+- Windows/Android 客户端实施方案：[docs/客户端开发实施方案.md](docs/客户端开发实施方案.md)
+- 客户端技术选型 ADR：[docs/adr/0001-客户端采用两端原生架构.md](docs/adr/0001-客户端采用两端原生架构.md)
+- 仓库内多 Agent 协作规范：[AGENTS.md](AGENTS.md)
+- 项目书与开发手册适用约束快照（供仓库内 Agent 使用）：[docs/依据/项目书与开发手册约束快照.md](docs/依据/项目书与开发手册约束快照.md)
+- v0.3-G0 测试沙盒验收记录：[docs/依据/v0.3-G0-测试沙盒验收记录.md](docs/依据/v0.3-G0-测试沙盒验收记录.md)
 
 ## 许可证
 

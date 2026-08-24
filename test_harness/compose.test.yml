@@ -1,0 +1,265 @@
+name: "${CLIPSHARE_COMPOSE_PROJECT:?CLIPSHARE_COMPOSE_PROJECT must be set by test-sandbox.ps1}"
+
+x-run-labels: &run-labels
+  com.clipshare.sandbox.run-id: "${CLIPSHARE_SANDBOX_RUN_ID:?sandbox run id is required}"
+
+x-python-image: &python-image
+  image: "${CLIPSHARE_APP_TEST_IMAGE:?unique app test image is required}"
+  build:
+    context: ..
+    dockerfile: test_harness/Dockerfile.app-test
+    args:
+      SANDBOX_RUN_ID: "${CLIPSHARE_SANDBOX_RUN_ID}"
+
+services:
+  db-test:
+    image: "${CLIPSHARE_DB_TEST_IMAGE:?unique database test image is required}"
+    build:
+      context: ..
+      dockerfile: test_harness/Dockerfile.db-test
+      args:
+        SANDBOX_RUN_ID: "${CLIPSHARE_SANDBOX_RUN_ID}"
+    user: "70:70"
+    read_only: true
+    cpus: "1.00"
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 128
+    environment:
+      POSTGRES_USER: clipshare_test
+      POSTGRES_PASSWORD: sandbox-local-only
+      POSTGRES_DB: clipshare_test
+      PGDATA: /var/lib/postgresql/data/pgdata
+    labels: *run-labels
+    tmpfs:
+      - /var/lib/postgresql/data:rw,noexec,nosuid,nodev,uid=70,gid=70,mode=0700,size=512m
+      - /var/run/postgresql:rw,noexec,nosuid,nodev,uid=70,gid=70,mode=0755,size=16m
+      - /tmp:rw,noexec,nosuid,nodev,uid=70,gid=70,mode=1777,size=128m
+    networks:
+      - app-db
+      - python-db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clipshare_test -d clipshare_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  app-test:
+    <<: *python-image
+    user: "1000:1000"
+    read_only: true
+    cpus: "1.00"
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 128
+    command:
+      - /bin/sh
+      - -c
+      - python -m test_harness.sandbox_guard && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log
+    environment:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+psycopg://clipshare_test:sandbox-local-only@db-test:5432/clipshare_test
+      PUBLIC_BASE_URL: http://app-test:8000
+      FILE_STORAGE_DIR: /app/.runtime/files
+      CLIPSHARE_SANDBOX_RUN_ID: "${CLIPSHARE_SANDBOX_RUN_ID}"
+      CLIPSHARE_SANDBOX_TOKEN_FILE: /run/secrets/clipshare_sandbox_token
+      CLIPSHARE_SANDBOX_TOKEN_SHA256: "${CLIPSHARE_SANDBOX_TOKEN_SHA256:?sandbox token digest is required}"
+    labels: *run-labels
+    secrets:
+      - clipshare_sandbox_token
+    tmpfs:
+      - /app/.runtime/files:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=256m
+      - /tmp:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=1777,size=128m
+    networks:
+      - app-db
+      - node-app
+    depends_on:
+      db-test:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2); raise SystemExit(0 if response.status == 200 else 1)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  python-test:
+    <<: *python-image
+    user: "${CLIPSHARE_SANDBOX_HOST_UID:?host uid is required}:${CLIPSHARE_SANDBOX_HOST_GID:?host gid is required}"
+    read_only: true
+    cpus: "2.00"
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    pids_limit: 256
+    environment:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+psycopg://clipshare_test:sandbox-local-only@db-test:5432/clipshare_test
+      PUBLIC_BASE_URL: http://app-test:8000
+      FILE_STORAGE_DIR: /tmp/clipshare-files
+      CLIPSHARE_SANDBOX_RUN_ID: "${CLIPSHARE_SANDBOX_RUN_ID}"
+      CLIPSHARE_SANDBOX_TOKEN_FILE: /run/secrets/clipshare_sandbox_token
+      CLIPSHARE_SANDBOX_TOKEN_SHA256: "${CLIPSHARE_SANDBOX_TOKEN_SHA256}"
+      TMPDIR: /tmp
+      PYTHONPYCACHEPREFIX: /sandbox/python/pycache
+      PIP_CACHE_DIR: /sandbox/python/pip-cache
+      PYTEST_DEBUG_TEMPROOT: /sandbox/python/pytest-temp
+      COVERAGE_FILE: /sandbox/python/artifacts/.coverage
+      RUFF_CACHE_DIR: /sandbox/python/ruff-cache
+      MYPY_CACHE_DIR: /sandbox/python/mypy-cache
+      CLIPSHARE_CONTRACT_ARTIFACT_DIR: /sandbox/python/artifacts/contracts
+    labels: *run-labels
+    secrets:
+      - clipshare_sandbox_token
+    volumes:
+      - type: bind
+        source: "${CLIPSHARE_PYTHON_RUNTIME_SOURCE:?python runtime path is required}"
+        target: /sandbox/python
+      - type: bind
+        source: "${CLIPSHARE_PYTHON_ARTIFACT_SOURCE:?python artifact path is required}"
+        target: /sandbox/python/artifacts
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=1777,size=512m
+    networks:
+      - python-db
+    depends_on:
+      db-test:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  node-test:
+    image: "${CLIPSHARE_NODE_TEST_IMAGE:?unique node test image is required}"
+    build:
+      context: ..
+      dockerfile: test_harness/Dockerfile.node-test
+      args:
+        SANDBOX_RUN_ID: "${CLIPSHARE_SANDBOX_RUN_ID}"
+    user: "${CLIPSHARE_SANDBOX_HOST_UID}:${CLIPSHARE_SANDBOX_HOST_GID}"
+    read_only: true
+    cpus: "2.00"
+    mem_limit: 1024m
+    memswap_limit: 1024m
+    pids_limit: 256
+    environment:
+      ENVIRONMENT: test
+      CLIPSHARE_BASE_URL: http://app-test:8000
+      CLIPSHARE_SANDBOX_RUN_ID: "${CLIPSHARE_SANDBOX_RUN_ID}"
+      CLIPSHARE_SANDBOX_TOKEN_FILE: /run/secrets/clipshare_sandbox_token
+      CLIPSHARE_SANDBOX_TOKEN_SHA256: "${CLIPSHARE_SANDBOX_TOKEN_SHA256}"
+      NPM_CONFIG_CACHE: /sandbox/node/npm-cache
+      NODE_REPL_HISTORY: /sandbox/node/node-repl-history
+      TMPDIR: /tmp
+    labels: *run-labels
+    secrets:
+      - clipshare_sandbox_token
+    volumes:
+      - type: bind
+        source: "${CLIPSHARE_NODE_RUNTIME_SOURCE:?node runtime path is required}"
+        target: /sandbox/node
+      - type: bind
+        source: "${CLIPSHARE_NODE_ARTIFACT_SOURCE:?node artifact path is required}"
+        target: /sandbox/node/artifacts
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=1777,size=512m
+    networks:
+      - node-app
+    depends_on:
+      app-test:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  dotnet-test:
+    image: "${CLIPSHARE_DOTNET_TEST_IMAGE:?unique dotnet test image is required}"
+    build:
+      context: ..
+      dockerfile: test_harness/Dockerfile.dotnet-test
+      args:
+        SANDBOX_RUN_ID: "${CLIPSHARE_SANDBOX_RUN_ID}"
+    user: "${CLIPSHARE_SANDBOX_HOST_UID}:${CLIPSHARE_SANDBOX_HOST_GID}"
+    read_only: true
+    cpus: "1.00"
+    mem_limit: 768m
+    memswap_limit: 768m
+    pids_limit: 128
+    environment:
+      DOTNET_CLI_HOME: /sandbox/dotnet/home
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      NUGET_PACKAGES: /sandbox/dotnet/nuget/packages
+      NUGET_HTTP_CACHE_PATH: /sandbox/dotnet/nuget/http
+      NUGET_SCRATCH: /sandbox/dotnet/nuget/scratch
+      TMPDIR: /tmp
+    labels: *run-labels
+    volumes:
+      - type: bind
+        source: "${CLIPSHARE_DOTNET_RUNTIME_SOURCE:?dotnet runtime path is required}"
+        target: /sandbox/dotnet
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=1777,size=128m
+    network_mode: none
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  kotlin-test:
+    image: "${CLIPSHARE_KOTLIN_TEST_IMAGE:?unique kotlin test image is required}"
+    build:
+      context: ..
+      dockerfile: test_harness/Dockerfile.kotlin-test
+      args:
+        SANDBOX_RUN_ID: "${CLIPSHARE_SANDBOX_RUN_ID}"
+    user: "${CLIPSHARE_SANDBOX_HOST_UID}:${CLIPSHARE_SANDBOX_HOST_GID}"
+    read_only: true
+    cpus: "1.00"
+    mem_limit: 768m
+    memswap_limit: 768m
+    pids_limit: 128
+    environment:
+      GRADLE_USER_HOME: /sandbox/kotlin/gradle
+      KOTLIN_DAEMON_RUN_FILES_PATH: /sandbox/kotlin/daemon
+      TMPDIR: /tmp
+    labels: *run-labels
+    volumes:
+      - type: bind
+        source: "${CLIPSHARE_KOTLIN_RUNTIME_SOURCE:?kotlin runtime path is required}"
+        target: /sandbox/kotlin
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=1777,size=128m
+    network_mode: none
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+networks:
+  app-db:
+    internal: true
+    labels: *run-labels
+  python-db:
+    internal: true
+    labels: *run-labels
+  node-app:
+    internal: true
+    labels: *run-labels
+
+secrets:
+  clipshare_sandbox_token:
+    file: "${CLIPSHARE_SANDBOX_TOKEN_SOURCE:?sandbox token source is required}"

@@ -6,16 +6,65 @@
 - status：HTTP 状态码
 - detail：补充说明（可含定位信息）
 """
+from collections.abc import Mapping
 from typing import Any
 
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = structlog.get_logger(__name__)
+
+
+class ProblemDetail(BaseModel):
+    """客户端冻结的 RFC 9457 风格错误契约。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = Field(description="稳定机器错误码")
+    title: str = Field(description="面向用户的简短标题")
+    status: int = Field(ge=400, le=599, description="HTTP 状态码")
+    detail: str = Field(description="本次错误的具体说明")
+
+
+_PROBLEM_DESCRIPTIONS: dict[int, str] = {
+    400: "请求或幂等键格式错误",
+    404: "资源不存在",
+    409: "幂等键冲突",
+    410: "资源已过期、耗尽或不可再获取",
+    413: "请求内容过大",
+    415: "媒体类型或文件类型不受支持",
+    422: "请求参数校验失败",
+    429: "请求速率超限",
+    500: "服务器内部错误",
+}
+
+
+def problem_responses(*statuses: int) -> dict[int | str, dict[str, Any]]:
+    """生成使用 ``application/problem+json`` 的 OpenAPI 响应声明。"""
+    responses: dict[int | str, dict[str, Any]] = {
+        status: {
+            "description": _PROBLEM_DESCRIPTIONS[status],
+            "content": {
+                "application/problem+json": {
+                    "schema": {"$ref": "#/components/schemas/ProblemDetail"}
+                }
+            },
+        }
+        for status in statuses
+    }
+    if 429 in responses:
+        responses[429]["headers"] = {
+            "Retry-After": {
+                "description": "客户端再次尝试前应等待的十进制秒数",
+                "schema": {"type": "integer", "minimum": 1},
+            }
+        }
+    return responses
 
 
 class AppError(Exception):
@@ -134,18 +183,46 @@ class ShareFileValidationError(AppError):
     status = 422
 
 
+class IdempotencyKeyInvalidError(AppError):
+    """Idempotency-Key 不符合冻结格式（400）。"""
+
+    type = "idempotency_key_invalid"
+    title = "幂等键格式错误"
+    status = 400
+
+
+class IdempotencyConflictError(AppError):
+    """相同幂等键被用于不同请求（409）。"""
+
+    type = "idempotency_conflict"
+    title = "幂等键冲突"
+    status = 409
+
+
+class IdempotencyReplayUnavailableError(AppError):
+    """幂等记录指向的资源不可恢复（409）。"""
+
+    type = "idempotency_replay_unavailable"
+    title = "幂等结果不可恢复"
+    status = 409
+
+
 def _problem_response(
     status: int,
     problem_type: str,
     title: str,
     detail: str,
-    headers: dict[str, str] | None = None,
+    headers: Mapping[str, str] | None = None,
 ) -> JSONResponse:
-    """构造 Problem Details 响应。"""
+    """构造不可缓存的 Problem Details 响应，并保留框架要求的响应头。"""
+    response_headers = {"Cache-Control": "no-store"}
+    if headers is not None:
+        response_headers.update(headers)
     return JSONResponse(
         status_code=status,
         content={"type": problem_type, "title": title, "status": status, "detail": detail},
-        headers=headers,
+        headers=response_headers,
+        media_type="application/problem+json",
     )
 
 
@@ -157,7 +234,7 @@ async def app_error_handler(request: Request[Any], exc: AppError) -> JSONRespons
 async def http_error_handler(request: Request[Any], exc: StarletteHTTPException) -> JSONResponse:
     """框架 HTTP 异常（如路由不存在、方法不允许）→ Problem Details。"""
     detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
-    return _problem_response(exc.status_code, "http_error", "请求错误", detail)
+    return _problem_response(exc.status_code, "http_error", "请求错误", detail, exc.headers)
 
 
 async def validation_error_handler(
@@ -173,9 +250,9 @@ async def validation_error_handler(
 
 async def unhandled_error_handler(request: Request[Any], exc: Exception) -> JSONResponse:
     """兜底：未预期异常 → 500 Problem Details（保证所有响应均为 JSON）。"""
-    logger.error(
-        "unhandled_error", error=str(exc), exc_info=(type(exc), exc, exc.__traceback__)
-    )
+    # SQLAlchemy/驱动异常的文本和 traceback 可能含绑定参数；这里只记录异常类型，
+    # 不记录异常消息、SQL、参数或堆栈，避免剪贴板正文与文件元数据进入日志。
+    logger.error("unhandled_error", error_type=type(exc).__name__)
     return _problem_response(500, "internal_error", "服务器内部错误", "服务器内部错误，请稍后重试")
 
 

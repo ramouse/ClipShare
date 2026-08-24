@@ -147,9 +147,8 @@
   /* ------------------------------------------------------------------ */
 
   /**
-   * 解析 API 返回的 naive UTC 时间（无时区标记，如 "2026-08-13T08:13:00.430978"）。
-   * JS 的 Date 对无时区字符串按本地时间解析，必须补 "Z" 让其按 UTC 解析，
-   * 否则展示时间会比真实时间偏 8 小时（中国时区）。
+   * 解析 API v1 的 RFC 3339 UTC 时间。兼容 v0.2 及更早的无时区字符串时补 "Z"，
+   * 防止旧响应被浏览器当作本地时间；v1 新响应已固定自带 "Z"。
    */
   function parseIsoUtc(value) {
     if (!value) {
@@ -542,6 +541,18 @@
   }
 
   /**
+   * 消耗型读取在响应到达前断线时，服务器端可能已经计入一次访问。
+   * 这种结果不能伪装成“可安全重试”的普通网络错误。
+   */
+  function showConsumptionOutcomeUnknown(action) {
+    showError({
+      title: action + "结果未知",
+      detail:
+        "服务器可能已经计入一次访问。为避免再次消耗访问次数，请勿直接重试；请联系分享者确认剩余次数或重新创建分享。",
+    });
+  }
+
+  /**
    * 下载文件：GET /files/{code}/download → blob；
    * 加密文件 → readKeyFromHash + importKey + decryptBytes 解密后再保存；
    * 成功后重拉元数据刷新剩余次数（下载消耗一次）。
@@ -550,12 +561,28 @@
     if (!fileData) {
       return;
     }
+    let keyB64 = null;
+    let decryptionKey = null;
     try {
       // 缺密钥零成本前置（审查加固）：元数据已带 encrypted 标记，
       // 先校验密钥再发下载请求，避免无密钥时白白消耗一次访问次数
-      if (fileData.encrypted && !readKeyFromHash()) {
-        showError(ERROR_MESSAGES.file_encrypted);
-        return;
+      if (fileData.encrypted) {
+        try {
+          keyB64 = readKeyFromHash();
+        } catch (err) {
+          showError(ERROR_MESSAGES.key_invalid);
+          return;
+        }
+        if (!keyB64) {
+          showError(ERROR_MESSAGES.file_encrypted);
+          return;
+        }
+        try {
+          decryptionKey = await ClipShareCrypto.importKeyFromBase64Url(keyB64);
+        } catch (err) {
+          showError(ERROR_MESSAGES.key_invalid);
+          return;
+        }
       }
       const response = await fetch(
         API_PREFIX + "/files/" + encodeURIComponent(code) + "/download"
@@ -566,17 +593,10 @@
       }
       let blob = await response.blob();
       if (fileData.encrypted) {
-        const keyB64 = readKeyFromHash();
-        if (!keyB64) {
-          // 缺密钥：链接未携带 #k= 片段，提示用完整链接
-          showError(ERROR_MESSAGES.file_encrypted);
-          return;
-        }
         try {
-          const key = await ClipShareCrypto.importKeyFromBase64Url(keyB64);
           const plain = await ClipShareCrypto.decryptBytes(
             new Uint8Array(await blob.arrayBuffer()),
-            key
+            decryptionKey
           );
           blob = new Blob([plain]);
         } catch (err) {
@@ -588,7 +608,7 @@
       saveBlob(blob, fileData.original_name);
       refreshFileMeta();
     } catch (err) {
-      showError({ title: "网络错误", detail: "下载失败，请检查网络后重试。" });
+      showConsumptionOutcomeUnknown("下载");
     }
   }
 
@@ -615,7 +635,7 @@
       renderByMode(detectType(text), text, filePreviewArea);
       filePreviewArea.scrollIntoView({ behavior: "smooth", block: "nearest" });
     } catch (err) {
-      showError({ title: "网络错误", detail: "预览失败，请检查网络后重试。" });
+      showConsumptionOutcomeUnknown("预览");
     }
   }
 
@@ -646,11 +666,33 @@
    * 从 URL fragment（#k=<base64url(key)>）解析密钥。
    * fragment 不随 HTTP 请求发送（也不会出现在 Referer 中），因此密钥只存在于
    * 浏览器地址栏与页面内存，服务器永远拿不到。
-   * 返回 base64url 字符串；无密钥返回 null。
+   * 返回严格 base64url 字符串；无密钥返回 null；重复、空值、编码值、填充或
+   * 非法字符一律抛错，避免正则只截取合法前缀后继续解密。
    */
   function readKeyFromHash() {
-    const m = /(?:^|&)k=([A-Za-z0-9_-]+)/.exec(location.hash.replace(/^#/, ""));
-    return m ? m[1] : null;
+    const fragment = location.hash.replace(/^#/, "");
+    if (!fragment) {
+      return null;
+    }
+    let key = null;
+    const fields = fragment.split("&");
+    for (const field of fields) {
+      const separator = field.indexOf("=");
+      const name = separator < 0 ? field : field.slice(0, separator);
+      if (name !== "k") {
+        continue;
+      }
+      if (separator < 0 || key !== null) {
+        throw new Error("invalid key fragment");
+      }
+      const value = field.slice(separator + 1);
+      // AES-256 原始 key 的无 padding Base64URL 编码固定为 43 字符。
+      if (!/^[A-Za-z0-9_-]{43}$/.test(value)) {
+        throw new Error("invalid key fragment");
+      }
+      key = value;
+    }
+    return key;
   }
 
   /** 解密成功：显示「已端到端解密」徽章。 */
@@ -665,7 +707,13 @@
    * 成功返回明文；密钥缺失/错误/密文损坏一律返回 null（由调用方渲染对应错误页）。
    */
   async function decryptShareContent(ciphertext) {
-    const keyB64 = readKeyFromHash();
+    let keyB64;
+    try {
+      keyB64 = readKeyFromHash();
+    } catch (err) {
+      showError(ERROR_MESSAGES.key_invalid);
+      return null;
+    }
     if (!keyB64) {
       showError(ERROR_MESSAGES.share_encrypted);
       return null;
@@ -724,6 +772,17 @@
   }
 
   async function loadShare() {
+    // fragment 是唯一能在消费请求前验证的 E2E 材料。明显非法时先失败，避免
+    // 发起一个注定无法解密、却可能消耗访问次数的请求。
+    try {
+      const keyB64 = readKeyFromHash();
+      if (keyB64) {
+        await ClipShareCrypto.importKeyFromBase64Url(keyB64);
+      }
+    } catch (err) {
+      showError(ERROR_MESSAGES.key_invalid);
+      return;
+    }
     try {
       const response = await fetch(API_PREFIX + "/shares/" + encodeURIComponent(code));
       const body = await response.json().catch(function () {
@@ -754,7 +813,7 @@
       // 其余错误：body 为 Problem Details {type, title, status, detail}
       showError(body || { title: "请求失败", detail: "HTTP " + response.status });
     } catch (err) {
-      showError({ title: "网络错误", detail: "无法连接服务器，请检查网络后重试。" });
+      showConsumptionOutcomeUnknown("读取");
     }
   }
 

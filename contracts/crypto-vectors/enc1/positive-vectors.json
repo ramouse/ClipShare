@@ -1,0 +1,88 @@
+{
+  "suite": "clipshare-enc1",
+  "suite_version": 1,
+  "spec_revision": "1.0.0",
+  "test_only": true,
+  "algorithm": {
+    "name": "AES-256-GCM",
+    "key_bits": 256,
+    "iv_bits": 96,
+    "tag_bits": 128,
+    "aad": "empty",
+    "output_layout": "ciphertext||tag"
+  },
+  "wire_format": "ENC1:<iv_b64url>.<cipher_and_tag_b64url>",
+  "base64url_profile": "RFC4648_URLSAFE_NO_PADDING_STRICT",
+  "limits": {
+    "max_encrypted_plaintext_bytes": 10485760,
+    "max_marker_chars": 16777216
+  },
+  "error_codes": [
+    "not_encrypted",
+    "invalid_base64url",
+    "invalid_key_length",
+    "invalid_iv_length",
+    "invalid_ciphertext_length",
+    "invalid_envelope",
+    "invalid_unicode",
+    "invalid_utf8",
+    "authentication_failed",
+    "size_limit_exceeded"
+  ],
+  "vectors": [
+    {
+      "id": "nist-aes256-gcm-empty",
+      "kind": "text",
+      "key_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "key_b64url": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "iv_hex": "000000000000000000000000",
+      "iv_b64url": "AAAAAAAAAAAAAAAA",
+      "plaintext_hex": "",
+      "plaintext_utf8": "",
+      "ciphertext_hex": "",
+      "tag_hex": "530f8afbc74536b9a963b4f1c4cb738b",
+      "cipher_and_tag_b64url": "Uw-K-8dFNrmpY7TxxMtziw",
+      "marker_ascii": "ENC1:AAAAAAAAAAAAAAAA.Uw-K-8dFNrmpY7TxxMtziw"
+    },
+    {
+      "id": "nist-aes256-gcm-zeros-16",
+      "kind": "bytes",
+      "key_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "key_b64url": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "iv_hex": "000000000000000000000000",
+      "iv_b64url": "AAAAAAAAAAAAAAAA",
+      "plaintext_hex": "00000000000000000000000000000000",
+      "ciphertext_hex": "cea7403d4d606b6e074ec5d3baf39d18",
+      "tag_hex": "d0d1c8a799996bf0265b98b5d48ab919",
+      "cipher_and_tag_b64url": "zqdAPU1ga24HTsXTuvOdGNDRyKeZmWvwJluYtdSKuRk",
+      "marker_ascii": "ENC1:AAAAAAAAAAAAAAAA.zqdAPU1ga24HTsXTuvOdGNDRyKeZmWvwJluYtdSKuRk"
+    },
+    {
+      "id": "nonzero-unicode-nul-crlf-normalization",
+      "kind": "text",
+      "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "key_b64url": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "iv_hex": "a0a1a2a3a4a5a6a7a8a9aaab",
+      "iv_b64url": "oKGio6Slpqeoqaqr",
+      "plaintext_hex": "436c6970536861726520e4b8ade69687f09f9982000d0ac3a97c65cc81",
+      "plaintext_utf8": "ClipShare 中文🙂\u0000\r\né|é",
+      "ciphertext_hex": "a574155d16a363cd0745636baa9c56598033c09292ba48af3572434afe",
+      "tag_hex": "981d1a762a164c636127956f31ed9f97",
+      "cipher_and_tag_b64url": "pXQVXRajY80HRWNrqpxWWYAzwJKSukivNXJDSv6YHRp2KhZMY2EnlW8x7Z-X",
+      "marker_ascii": "ENC1:oKGio6Slpqeoqaqr.pXQVXRajY80HRWNrqpxWWYAzwJKSukivNXJDSv6YHRp2KhZMY2EnlW8x7Z-X"
+    },
+    {
+      "id": "nonzero-binary-boundaries",
+      "kind": "bytes",
+      "key_hex": "ffeeddccbbaa998877665544332211000123456789abcdeffedcba9876543210",
+      "key_b64url": "_-7dzLuqmYh3ZlVEMyIRAAEjRWeJq83v_ty6mHZUMhA",
+      "iv_hex": "101112131415161718191a1b",
+      "iv_b64url": "EBESExQVFhcYGRob",
+      "plaintext_hex": "00ff80017f102030405060708090a0b0c0d0e0f0fefdfcfbfaf9f8f7f6f5f4f3",
+      "ciphertext_hex": "1be77bd20e912b74bd4d8e85b2142e71ca5eb75c2459b66a2bbdf51ef7b8c7f8",
+      "tag_hex": "1421aaf701b5558cd7458e4d15baa773",
+      "cipher_and_tag_b64url": "G-d70g6RK3S9TY6FshQuccpet1wkWbZqK731Hve4x_gUIar3AbVVjNdFjk0Vuqdz",
+      "marker_ascii": "ENC1:EBESExQVFhcYGRob.G-d70g6RK3S9TY6FshQuccpet1wkWbZqK731Hve4x_gUIar3AbVVjNdFjk0Vuqdz"
+    }
+  ]
+}

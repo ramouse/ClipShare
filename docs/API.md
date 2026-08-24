@@ -1,11 +1,17 @@
 # ClipShare API 文档
 
-> 本文档为书面版 API 文档（与代码一一对应）。应用运行时可通过 `/docs`（OpenAPI/Swagger UI）查看自动生成的交互式文档，二者关系见文末 §7。
-> 若本文档与代码不一致，以代码为准。
+> 本文档为 API v1（契约版本 `1.0.0`）书面说明。应用运行时可通过 `/docs`
+> 查看交互式 OpenAPI；版本化机器快照位于 `contracts/openapi/clipshare-v1.openapi.json`。
+> 代码、快照和本文档必须同步，差异会使 C1/CI 契约门禁失败，禁止静默选择其一。
 
 - Base URL：`/api/v1`
-- 所有请求/响应均为 JSON（`application/json`），UTF-8 编码；唯一例外是 `raw`/`qr`/`preview`/`download` 端点（见端点表）
-- 所有响应（含错误响应）均携带安全响应头：`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、`Content-Security-Policy`（详见 app/core/security.py）
+- 结构化成功响应使用 `application/json`；错误统一使用 `application/problem+json`；
+  `raw`/`qr`/`preview`/`download` 返回各自内容类型。
+- API 时间固定为带 `Z` 的 RFC 3339 UTC，固定六位微秒，例如
+  `2026-08-13T08:13:00.430978Z`；客户端不得把它解释为本地无时区时间。
+- 所有 `/api/` 成功与错误响应均发送 `Cache-Control: no-store`，并携带安全响应头：
+  `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、
+  `Referrer-Policy: no-referrer`、`Content-Security-Policy`。
 
 ## 1. 端点总览
 
@@ -21,6 +27,24 @@
 | GET | `/api/v1/files/{code}/download` | 下载文件（消耗 1 次，流式输出） | `200` 文件流 |
 | GET | `/healthz` | 健康检查（容器探活/部署验证） | `200` JSON |
 
+### 1.1 客户端重试与消费语义
+
+| operationId | 是否消费次数 | 自动重试 |
+|-------------|--------------|----------|
+| `createShare` / `uploadFile` | 否 | 仅携带**同一** `Idempotency-Key` 时允许 |
+| `readShare` / `readShareRaw` / `previewFile` / `downloadFile` | 是 | 禁止；超时结果未知，重试可能再次消费 |
+| `getShareQr` / `getFileMetadata` / `healthCheck` | 否 | 安全重试；429 必须服从 `Retry-After` |
+
+同一创建型幂等键和规范化请求会返回同一资源，响应头
+`Idempotency-Replayed: false|true` 区分首创与重放；同键不同请求返回 409
+`idempotency_conflict`。键必须为 8–128 位受限 ASCII，服务端只保存 SHA-256 摘要，
+默认保留 24 小时。未携带键仍兼容旧客户端，但网络重试不具备幂等保证。
+
+“消费一次”冻结为服务器成功授权的一次内容领取，不等于客户端成功展示、保存或解密。
+E2E 密钥不发送给服务器，因此错误密钥、解密失败或响应中途断线都不会退回次数；详见
+[ADR-0002](adr/0002-v1-消费型读取与端到端解密语义.md)。消费型请求发生网络异常时，
+客户端必须提示“结果未知”并停止，不得提供自动重试。
+
 页面路由（**不在 OpenAPI 中**，`include_in_schema=False`）：
 
 | 方法 | 路径 | 说明 |
@@ -33,6 +57,9 @@
 ## 2. 创建分享
 
 ### POST /api/v1/shares
+
+可选请求头：`Idempotency-Key`，格式与语义见 §1.1。Windows/Android 创建请求必须生成
+每次用户操作唯一的高熵键，并在同一操作重试期间复用。
 
 请求体：
 
@@ -48,9 +75,9 @@
 {
   "code": "AbCdEf",
   "url": "http://localhost:8000/s/AbCdEf",
-  "expires_at": "2026-08-14T08:13:00.430978",
+  "expires_at": "2026-08-14T08:13:00.430978Z",
   "max_views": 5,
-  "created_at": "2026-08-13T08:13:00.430978"
+  "created_at": "2026-08-13T08:13:00.430978Z"
 }
 ```
 
@@ -58,7 +85,7 @@
 |------|------|
 | `code` | 6 位 Base62 短码（`secrets` 安全随机生成，不可猜测；唯一索引兜底碰撞） |
 | `url` | 分享网页地址：`public_base_url` + `/s/{code}`（部署时由 `PUBLIC_BASE_URL` 环境变量配置） |
-| `expires_at` | 到期时间（naive UTC）；`forever` 时返回 `null` |
+| `expires_at` | RFC 3339 UTC 到期时间；`forever` 时返回 `null` |
 | `max_views` | 与请求一致；不限时返回 `null` |
 
 ### curl 示例
@@ -75,7 +102,8 @@ curl -s -X POST http://localhost:8000/api/v1/shares \
 
 ### GET /api/v1/shares/{code}
 
-`{code}` 为 6 位 Base62 短码。读取成功会**消耗一次访问次数**。
+`{code}` 为 6 位 Base62 短码。服务器成功授权领取时会**消耗一次访问次数**；E2E
+解密成功与否不改变计数。
 
 成功响应 `200`：
 
@@ -83,9 +111,9 @@ curl -s -X POST http://localhost:8000/api/v1/shares \
 {
   "code": "AbCdEf",
   "content": "你好，ClipShare",
-  "expires_at": "2026-08-14T08:13:00.430978",
+  "expires_at": "2026-08-14T08:13:00.430978Z",
   "remaining_views": 4,
-  "created_at": "2026-08-13T08:13:00.430978"
+  "created_at": "2026-08-13T08:13:00.430978Z"
 }
 ```
 
@@ -123,6 +151,10 @@ curl -s http://localhost:8000/api/v1/shares/AbCdEf/qr -o qr.png
 
 ### POST /api/v1/files
 
+可选请求头：`Idempotency-Key`，格式与语义见 §1.1。请求指纹包含净化后的文件名、
+媒体类型、参数、文件字节数和文件 SHA-256；重放请求仍会流式接收并散列上传体，确认
+内容相同后删除本次临时文件，只保留首次创建的资源。
+
 请求体（`multipart/form-data`）：
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -130,7 +162,7 @@ curl -s http://localhost:8000/api/v1/shares/AbCdEf/qr -o qr.png
 | `file` | file | 是 | 文件内容（**流式上传**：服务端 64KB 逐块落盘并计长，超限即断并清理半成品） |
 | `expiry` | string | 否 | 有效期档位：`1h` / `24h`（默认）/ `7d` / `forever` |
 | `max_views` | string | 否 | 访问次数上限：`1` / `5` / 空串（空串 = 不限，默认；预览与下载共享次数池） |
-| `encrypted` | bool | 否 | 是否 E2E 加密（默认 false）。**仅 ≤10MB**（`FILE_ENCRYPT_MAX_SIZE`）：浏览器全内存加密的固有代价，超限返回 422（`file_encrypt_not_available`），前端隐藏开关 + 服务端双保险 |
+| `encrypted` | bool | 否 | 是否 E2E 加密（默认 false）。为 true 时上传体必须是严格 ENC1 marker；**加密前明文**仅 ≤10MiB（`FILE_ENCRYPT_MAX_SIZE`），不是对 Base64URL marker 大小重复套用 10MiB |
 
 限制：
 
@@ -140,6 +172,9 @@ curl -s http://localhost:8000/api/v1/shares/AbCdEf/qr -o qr.png
   不在白名单返回 415 `file_type_not_allowed`（白名单按**净化后**的文件扩展名判定）；
 - 用户文件名**只存元数据**：磁盘文件名由服务端 `secrets.token_hex(16)` 生成（无扩展名），
   路径遍历攻击无效（`sanitize_filename` 纯函数净化 + `resolve/is_relative_to` 双重防御）。
+- `encrypted=true` 时服务端流式验证 `ENC1:<12-byte iv>.<ciphertext||16-byte tag>` 的
+  严格无 padding Base64URL envelope，并由编码长度推导明文大小；服务端没有密钥，不能
+  验证 GCM tag 真伪，认证失败由持钥客户端处理。
 
 成功响应 `201`：
 
@@ -150,9 +185,9 @@ curl -s http://localhost:8000/api/v1/shares/AbCdEf/qr -o qr.png
   "original_name": "报告.pdf",
   "size_bytes": 1048576,
   "encrypted": false,
-  "expires_at": "2026-08-14T08:13:00.430978",
+  "expires_at": "2026-08-14T08:13:00.430978Z",
   "max_views": 5,
-  "created_at": "2026-08-13T08:13:00.430978"
+  "created_at": "2026-08-13T08:13:00.430978Z"
 }
 ```
 
@@ -181,9 +216,9 @@ curl -s -X POST http://localhost:8000/api/v1/files \
   "encrypted": false,
   "content_type": "application/pdf",
   "preview_available": false,
-  "expires_at": "2026-08-14T08:13:00.430978",
+  "expires_at": "2026-08-14T08:13:00.430978Z",
   "remaining_views": 4,
-  "created_at": "2026-08-13T08:13:00.430978"
+  "created_at": "2026-08-13T08:13:00.430978Z"
 }
 ```
 
@@ -220,7 +255,10 @@ curl -s http://localhost:8000/api/v1/files/AbCdEf/download -o 报告.pdf
 
 ### 4.5 文件加密语义（E2E 加密文件）
 
-- 与文本加密同一密钥链路：密文 = `ENC1:` 标记 + IV + cipher，密钥仅存于分享链接 fragment（`#k=…`）；
+- 与文本加密同一密钥链路：线格式为
+  `ENC1:<iv_b64url>.<ciphertext_and_tag_b64url>`，密钥仅存于分享链接 fragment（`#k=…`）；
+- ENC1 固定 AES-256-GCM、32-byte key、12-byte IV、128-bit tag、空 AAD，输出布局为
+  `ciphertext || tag`；Base64URL 严格禁止 padding、空白、`+`、`/` 与非规范 pad bits；
 - 文件内容为**字节级**加密（`encryptBytes/decryptBytes`，Uint8Array 输入输出，明文二进制不经过字符串层）；
 - 服务端只存密文（集成测试做磁盘字节级零明文断言）；加密文件**不可预览**——预览端点
   返回密文头部无意义，且浏览器无法解密截断的密文，故 `preview_available=false` 且端点直接 415；
@@ -238,11 +276,11 @@ curl -s http://localhost:8000/api/v1/files/AbCdEf/download -o 报告.pdf
 | `file_too_large` | 413 | 超过 100MB 上限（流式落盘中断且无残留） |
 | `file_type_not_allowed` | 415 | 扩展名不在白名单 |
 | `preview_not_available` | 415 | 加密 / 超预览上限 / 扩展名不在预览白名单 |
-| `file_encrypt_not_available` | 422 | `encrypted=true` 但文件 >10MB 加密上限（服务端兜底） |
+| `file_encrypt_not_available` | 422 | `encrypted=true` 但 envelope 非法，或推导出的加密前明文 >10MiB |
 
 ## 5. 统一错误模型
 
-所有错误响应均为 RFC 9457 Problem Details 风格：
+所有错误响应均为 `application/problem+json` 的 RFC 9457 风格固定 envelope：
 
 ```json
 {
@@ -260,7 +298,8 @@ curl -s http://localhost:8000/api/v1/files/AbCdEf/download -o 报告.pdf
 | `status` | HTTP 状态码 |
 | `detail` | 补充说明（可含定位信息） |
 
-> 全局异常处理器（app/core/errors.py）保证**所有响应均为 JSON**（含未预期异常，兜底为 500）。
+> 稳定错误目录位于 `contracts/problem-details/v1.json`。客户端只按 `type/status`
+> 分流，不依赖可能本地化或改写的 `title/detail` 文案。
 
 ### 错误码清单（type → 状态码 → 触发场景）
 
@@ -269,6 +308,9 @@ curl -s http://localhost:8000/api/v1/files/AbCdEf/download -o 报告.pdf
 | `share_not_found` | 404 | 短码不存在（读取 / raw / 二维码） |
 | `share_expired` | 410 | 分享已过期 |
 | `share_views_exhausted` | 410 | 分享访问次数已耗尽 |
+| `idempotency_key_invalid` | 400 | 创建型请求的 `Idempotency-Key` 格式非法 |
+| `idempotency_conflict` | 409 | 同一键已用于不同规范请求 |
+| `idempotency_replay_unavailable` | 409 | 幂等记录存在，但其资源结果已不可恢复；使用新键重新发起 |
 | `validation_error` | 422 | 请求参数校验失败（content 缺失/超长/空、expiry 或 max_views 不在枚举内）；detail 汇总所有字段错误 |
 | `http_error` | 404/405 等 | 路由不存在、方法不允许等框架级错误 |
 | `rate_limited` | 429 | 速率限制（附 `Retry-After` 响应头） |
@@ -314,12 +356,13 @@ curl -s -i -X POST http://localhost:8000/api/v1/shares \
 1. 浏览器用 WebCrypto AES-256-GCM 加密明文，得到密文标记串：
 
    ```
-   ENC1:<iv_b64url>.<cipher_b64url>
+   ENC1:<iv_b64url>.<ciphertext_and_tag_b64url>
    ```
 
    - `ENC1:` 为版本前缀（密文识别标记；未来升级格式用 `ENC2:` 等新前缀，旧数据仍可解析）
    - `iv`：12 字节随机数（每次加密不同，同一密钥多次加密结果互不相同）
-   - `cipher`：含 16 字节 GCM 认证标签（密钥错误/篡改时解密直接报错）
+   - `ciphertext_and_tag`：严格无 padding Base64URL 编码的 `ciphertext || 16-byte tag`
+   - AAD 固定为空；文本严格 UTF-8、无 BOM/trim/Unicode normalization，孤立 surrogate 拒绝
    - 密钥：32 字节随机数，base64url 编码后拼入分享链接 fragment（`#k=…`）——**fragment 不随 HTTP 请求发送，服务器协议上拿不到密钥**
 
 2. 前端将密文串作为 `content` 走普通 `POST /api/v1/shares`；服务器按普通字符串存储，创建/读取/计数/过期/限流全部零改动。
@@ -335,6 +378,9 @@ curl -s -i -X POST http://localhost:8000/api/v1/shares \
 
 ## 8. 与 /docs（OpenAPI）的关系
 
-- `/docs` 由 FastAPI 从路由代码自动生成（Swagger UI，可在线调试），列出端点、请求/响应 schema、参数——它是**机器可读契约的交互形态**。
+- `/docs` 由 FastAPI 从路由代码生成（Swagger UI）；`contracts/openapi/clipshare-v1.openapi.json`
+  是客户端代码生成和兼容性审查使用的**版本化机器契约**，沙盒测试逐字节比较运行时 schema。
 - 本文档是**书面版**：补充了 OpenAPI 无法表达的内容——统一错误模型与全部错误码语义（§5）、文件分享业务语义（§4：计数语义/预览规则/加密语义）、速率限制策略与部署注意（§6）、E2E 加密与 API 的关系（§7）、业务语义（页面 shell 路由不计次数、二维码不耗次数等）、curl 使用示例与平台注意事项。
-- 两者同源于代码：路由定义在 `app/api/routes/shares.py`、`app/api/routes/files.py`（挂载前缀 `/api/v1`）、请求/响应模型在 `app/schemas/share.py`、`app/schemas/file.py`、错误模型在 `app/core/errors.py`。若发现不一致，以代码为准。
+- 路由定义在 `app/api/routes/shares.py`、`app/api/routes/files.py`，请求/响应模型在
+  `app/schemas/`，错误模型在 `app/core/errors.py`；任何有意变更必须同步快照、错误目录、
+  书面文档和三端契约测试，并完成兼容性审查。

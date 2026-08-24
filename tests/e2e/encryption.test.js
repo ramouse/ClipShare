@@ -1,5 +1,5 @@
 /* M5 端到端加密 E2E 测试（宿主机 Node ≥ 20 执行，需服务器运行中）：
- *   1. crypto.js 自检：与浏览器完全同一份源码，Node 24 全局 crypto.subtle/btoa/atob 下
+ *   1. crypto.js 自检：与浏览器完全同一份源码，Node 22 全局 crypto.subtle/btoa/atob 下
  *      加解密往返、IV 随机性、密钥导出/导入、错误密钥/格式错误抛错；
  *   2. v0.2 字节级扩展：encryptBytes/decryptBytes 往返（含 0x00 与 UTF-8 多字节
  *      —— TextDecoder 损坏规避回归：明文二进制不经过字符串层）、错误密钥 reject、
@@ -10,6 +10,9 @@
  */
 "use strict";
 
+const { getSandboxBaseUrl } = require("../../test_harness/sandbox_guard.js");
+
+const BASE = getSandboxBaseUrl();
 const {
   generateKey,
   encryptContent,
@@ -21,7 +24,6 @@ const {
   isEncryptedContent,
 } = require("../../app/static/js/crypto.js");
 
-const BASE = process.env.CLIPSHARE_BASE_URL || "http://localhost:8000";
 const API = BASE + "/api/v1";
 const PLAINTEXT = "M5 端到端加密 E2E 断言 secret-2026";
 
@@ -157,6 +159,8 @@ async function testServerNeverSeesPlaintext() {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content: enc, expiry: "1h" }),
+    redirect: "error",
+    signal: AbortSignal.timeout(10000),
   });
   if (createResp.status !== 201) {
     throw new Error("创建失败 HTTP " + createResp.status + "：" + (await createResp.text()));
@@ -164,7 +168,10 @@ async function testServerNeverSeesPlaintext() {
   const created = await createResp.json();
   const code = created.code;
 
-  const readResp = await fetch(API + "/shares/" + encodeURIComponent(code));
+  const readResp = await fetch(API + "/shares/" + encodeURIComponent(code), {
+    redirect: "error",
+    signal: AbortSignal.timeout(10000),
+  });
   if (readResp.status !== 200) {
     throw new Error("读取失败 HTTP " + readResp.status);
   }
@@ -179,7 +186,7 @@ async function testServerNeverSeesPlaintext() {
 
 (async () => {
   try {
-    console.log("== M5 端到端加密 E2E（真实 API，Node 24）==");
+console.log("== M5 端到端加密 E2E（真实 API，Node 22）==");
     await testCryptoRoundtrip();
     await testIvRandomness();
     await testKeyExportImport();

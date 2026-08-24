@@ -1,0 +1,36 @@
+FROM gradle:9.7.1-jdk21-noble@sha256:3b249e98939de913f2bd566f1ae62cf45865da2d8e137592af976bcd981db835
+
+ENV GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.caching=false"
+
+RUN gradle --version | grep -F "Gradle 9.7.1"
+
+WORKDIR /app
+
+COPY --chown=gradle:gradle clients/android/crypto-contract ./clients/android/crypto-contract
+COPY --chown=gradle:gradle contracts ./contracts
+
+WORKDIR /app/clients/android/crypto-contract
+
+# 受控联网只发生在镜像构建阶段。依赖版本由 gradle.lockfile 锁定，
+# 所有下载构件必须匹配仓库内 verification-metadata.xml 的 SHA-256。
+# 远端仓库偶发中断 TLS 握手时，仅做有限重试，不降低或绕过校验。
+RUN set -eu; \
+    attempt=1; \
+    while [ "${attempt}" -le 3 ]; do \
+        if gradle --no-daemon --dependency-verification strict installDist; then \
+            exit 0; \
+        fi; \
+        if [ "${attempt}" -eq 3 ]; then \
+            exit 1; \
+        fi; \
+        attempt=$((attempt + 1)); \
+        sleep 5; \
+    done
+
+ARG SANDBOX_RUN_ID
+RUN test -n "${SANDBOX_RUN_ID}"
+LABEL com.clipshare.sandbox.run-id="${SANDBOX_RUN_ID}"
+
+USER gradle:gradle
+
+CMD ["/app/clients/android/crypto-contract/build/install/clipshare-enc1-contract/bin/clipshare-enc1-contract", "/app/contracts/crypto-vectors/enc1/positive-vectors.json", "/app/contracts/crypto-vectors/enc1/negative-vectors.json"]

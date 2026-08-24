@@ -9,7 +9,7 @@
  *   密文含 16 字节 GCM 认证标签（可检测密钥错误与篡改）；
  * - 加载方式：浏览器 <script> 挂到 window.ClipShareCrypto；
  *   Node（≥20）走 module.exports，供 tests/e2e/encryption.test.js 直接 require
- *   （Node 24 自带全局 crypto.subtle 与 btoa/atob，行为与浏览器一致）。
+ *   （当前沙盒 Node 22 自带全局 crypto.subtle 与 btoa/atob，行为与浏览器一致）。
  */
 (function (root, factory) {
   "use strict";
@@ -28,6 +28,21 @@
   // AES-GCM 推荐 12 字节 IV；256 位密钥 = 32 字节
   var IV_BYTES = 12;
   var KEY_BYTES = 32;
+  var TAG_BITS = 128;
+  var TAG_BYTES = TAG_BITS / 8;
+  var MAX_MARKER_CHARS = 16 * 1024 * 1024;
+  var EMPTY_AAD = new Uint8Array(0);
+
+  function Enc1Error(code, message) {
+    this.name = "Enc1Error";
+    this.code = code;
+    this.message = message;
+    if (Error.captureStackTrace) {
+      Error.captureStackTrace(this, Enc1Error);
+    }
+  }
+  Enc1Error.prototype = Object.create(Error.prototype);
+  Enc1Error.prototype.constructor = Enc1Error;
 
   /* ------------------------------------------------------------------ */
   /* base64url 编解码（浏览器原生 btoa/atob，无第三方库）                    */
@@ -47,16 +62,54 @@
     return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   }
 
-  /** base64url → Uint8Array（容忍缺失的 = 填充）。 */
+  /** 严格 canonical base64url → Uint8Array（RFC 4648 URL-safe、禁止 padding）。 */
   function base64UrlToBytes(str) {
+    if (typeof str !== "string" || !/^[A-Za-z0-9_-]+$/.test(str) || str.length % 4 === 1) {
+      throw new Enc1Error("invalid_base64url", "Base64URL 格式非法");
+    }
     var b64 = str.replace(/-/g, "+").replace(/_/g, "/");
     var padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-    var bin = atob(padded);
+    var bin;
+    try {
+      bin = atob(padded);
+    } catch (err) {
+      throw new Enc1Error("invalid_base64url", "Base64URL 解码失败");
+    }
     var bytes = new Uint8Array(bin.length);
     for (var i = 0; i < bin.length; i++) {
       bytes[i] = bin.charCodeAt(i);
     }
+    if (bytesToBase64Url(bytes) !== str) {
+      throw new Enc1Error("invalid_base64url", "Base64URL 不是规范编码");
+    }
     return bytes;
+  }
+
+  function gcmParams(iv) {
+    return { name: "AES-GCM", iv: iv, additionalData: EMPTY_AAD, tagLength: TAG_BITS };
+  }
+
+  async function encryptMarker(data, key, iv) {
+    if (!(iv instanceof Uint8Array) || iv.length !== IV_BYTES) {
+      throw new Enc1Error("invalid_iv_length", "加密 IV 长度非法");
+    }
+    var cipher = new Uint8Array(await crypto.subtle.encrypt(gcmParams(iv), key, data));
+    return VERSION_PREFIX + bytesToBase64Url(iv) + "." + bytesToBase64Url(cipher);
+  }
+
+  function assertWellFormedUnicode(text) {
+    for (var i = 0; i < text.length; i++) {
+      var unit = text.charCodeAt(i);
+      if (unit >= 0xd800 && unit <= 0xdbff) {
+        var next = i + 1 < text.length ? text.charCodeAt(i + 1) : -1;
+        if (next < 0xdc00 || next > 0xdfff) {
+          throw new Enc1Error("invalid_unicode", "文本包含孤立 UTF-16 高代理项");
+        }
+        i += 1;
+      } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+        throw new Enc1Error("invalid_unicode", "文本包含孤立 UTF-16 低代理项");
+      }
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -85,7 +138,7 @@
   async function importKeyFromBase64Url(keyB64) {
     var raw = base64UrlToBytes(keyB64);
     if (raw.length !== KEY_BYTES) {
-      throw new Error("密钥长度非法：期望 " + KEY_BYTES + " 字节");
+      throw new Enc1Error("invalid_key_length", "密钥长度非法：期望 " + KEY_BYTES + " 字节");
     }
     return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, true, [
       "encrypt",
@@ -104,17 +157,23 @@
    */
   function parseMarker(encoded) {
     if (!isEncryptedContent(encoded)) {
-      throw new Error("不是 ClipShare 加密内容（缺少 " + VERSION_PREFIX + " 前缀）");
+      throw new Enc1Error("not_encrypted", "不是 ClipShare 加密内容");
+    }
+    if (encoded.length > MAX_MARKER_CHARS) {
+      throw new Enc1Error("size_limit_exceeded", "ENC1 标记超过客户端解析上限");
     }
     var body = encoded.slice(VERSION_PREFIX.length);
-    var sep = body.indexOf(".");
-    if (sep <= 0 || sep >= body.length - 1) {
-      throw new Error("密文格式错误：无法定位 iv 与密文分隔符");
+    var fields = body.split(".");
+    if (fields.length !== 2 || fields[0].length === 0 || fields[1].length === 0) {
+      throw new Enc1Error("invalid_envelope", "密文格式错误：必须包含一个 iv.cipher 分隔符");
     }
-    var iv = base64UrlToBytes(body.slice(0, sep));
-    var cipher = base64UrlToBytes(body.slice(sep + 1));
+    var iv = base64UrlToBytes(fields[0]);
+    var cipher = base64UrlToBytes(fields[1]);
     if (iv.length !== IV_BYTES) {
-      throw new Error("密文格式错误：iv 长度非法");
+      throw new Enc1Error("invalid_iv_length", "密文格式错误：iv 长度非法");
+    }
+    if (cipher.length < TAG_BYTES) {
+      throw new Enc1Error("invalid_ciphertext_length", "密文短于 16 字节认证标签");
     }
     return { iv: iv, cipher: cipher };
   }
@@ -124,10 +183,10 @@
    * 每次加密生成新随机 IV，同一密钥多次加密结果互不相同。
    */
   async function encryptContent(plaintext, key) {
+    assertWellFormedUnicode(plaintext);
     var iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
     var data = new TextEncoder().encode(plaintext);
-    var cipher = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, data));
-    return VERSION_PREFIX + bytesToBase64Url(iv) + "." + bytesToBase64Url(cipher);
+    return encryptMarker(data, key, iv);
   }
 
   /**
@@ -136,10 +195,17 @@
    */
   async function decryptContent(encoded, key) {
     var parts = parseMarker(encoded);
-    var plain = new Uint8Array(
-      await crypto.subtle.decrypt({ name: "AES-GCM", iv: parts.iv }, key, parts.cipher)
-    );
-    return new TextDecoder().decode(plain);
+    var plain;
+    try {
+      plain = new Uint8Array(await crypto.subtle.decrypt(gcmParams(parts.iv), key, parts.cipher));
+    } catch (err) {
+      throw new Enc1Error("authentication_failed", "密钥错误或密文已被篡改");
+    }
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(plain);
+    } catch (err) {
+      throw new Enc1Error("invalid_utf8", "解密结果不是合法 UTF-8 文本");
+    }
   }
 
   /**
@@ -149,10 +215,7 @@
    */
   async function encryptBytes(data, key) {
     var iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
-    var cipher = new Uint8Array(
-      await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, data)
-    );
-    var marker = VERSION_PREFIX + bytesToBase64Url(iv) + "." + bytesToBase64Url(cipher);
+    var marker = await encryptMarker(data, key, iv);
     // 标记串纯 ASCII，TextEncoder 编码无损（被编码的是标记元数据而非明文）
     return new TextEncoder().encode(marker);
   }
@@ -176,9 +239,11 @@
       bin += String.fromCharCode.apply(null, part);
     }
     var parts = parseMarker(bin);
-    return new Uint8Array(
-      await crypto.subtle.decrypt({ name: "AES-GCM", iv: parts.iv }, key, parts.cipher)
-    );
+    try {
+      return new Uint8Array(await crypto.subtle.decrypt(gcmParams(parts.iv), key, parts.cipher));
+    } catch (err) {
+      throw new Enc1Error("authentication_failed", "密钥错误或密文已被篡改");
+    }
   }
 
   /** 判断一段文本是否为 ClipShare 加密内容（版本前缀开头）。 */
@@ -188,6 +253,7 @@
 
   return {
     VERSION_PREFIX: VERSION_PREFIX,
+    Enc1Error: Enc1Error,
     isEncryptedContent: isEncryptedContent,
     generateKey: generateKey,
     exportKeyToBase64Url: exportKeyToBase64Url,

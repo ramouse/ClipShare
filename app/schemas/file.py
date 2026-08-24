@@ -1,8 +1,9 @@
 """文件分享接口的请求 / 响应模型。"""
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel
+
+from app.core.time import Rfc3339UtcDatetime
 
 
 class FileCreatedResponse(BaseModel):
@@ -13,9 +14,9 @@ class FileCreatedResponse(BaseModel):
     original_name: str
     size_bytes: int
     encrypted: bool
-    expires_at: datetime | None
+    expires_at: Rfc3339UtcDatetime | None
     max_views: int | None
-    created_at: datetime
+    created_at: Rfc3339UtcDatetime
 
 
 class FileReadResponse(BaseModel):
@@ -30,7 +31,7 @@ class FileReadResponse(BaseModel):
     content_type: str
     # 由路由计算：未加密 + 大小不超预览截断上限 + 扩展名在预览白名单
     preview_available: bool
-    expires_at: datetime | None
+    expires_at: Rfc3339UtcDatetime | None
     # 预览 + 下载共享次数池的剩余次数；None 表示不限次
     remaining_views: int | None
-    created_at: datetime
+    created_at: Rfc3339UtcDatetime

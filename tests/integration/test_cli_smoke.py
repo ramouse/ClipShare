@@ -20,7 +20,7 @@ from cli.main import CliError, get_share, get_share_to_file, send_share, upload_
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _ensure_tables() -> Iterator[None]:
+def _ensure_tables(_verified_sandbox_database: None) -> Iterator[None]:
     """会话级幂等建表（与既有集成测试保持一致）。"""
     Base.metadata.create_all(engine)
     yield
@@ -31,6 +31,7 @@ def _clean_shares() -> Iterator[None]:
     """每个用例结束后清空业务表与短码中心表，保证用例间数据互不干扰。"""
     yield
     with engine.begin() as conn:
+        conn.execute(text("DELETE FROM idempotency_records"))
         conn.execute(text("DELETE FROM shares"))
         conn.execute(text("DELETE FROM share_files"))
         conn.execute(text("DELETE FROM shortcodes"))

@@ -40,7 +40,7 @@ STATIC_FILES = [
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _ensure_tables() -> Iterator[None]:
+def _ensure_tables(_verified_sandbox_database: None) -> Iterator[None]:
     """会话级幂等建表（与 test_shares_api.py 保持一致）。"""
     Base.metadata.create_all(engine)
     yield

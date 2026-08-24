@@ -7,8 +7,8 @@
 - ``GET /s/{code}`` 对任意短码都返回同一查看页 shell（不校验存在性），
   404 / 410 等错误由前端 JS 按 API 错误体的 ``type`` 字段渲染友好错误页；
 - 因此页面路由完全不触碰数据库，也不受慢 API 限流影响；
-- ``include_in_schema=False``：页面是 HTML 而非 REST 资源，不进入 OpenAPI 文档，
-  OpenAPI 只描述 /api/v1 的机器接口。
+- ``include_in_schema=False``：页面是 HTML 而非 REST 资源，不进入 OpenAPI 文档；
+  OpenAPI 描述 /api/v1 的机器接口以及 /healthz 运维探针。
 """
 from pathlib import Path
 

@@ -1,0 +1,83 @@
+{
+  "suite": "clipshare-enc1-negative",
+  "suite_version": 1,
+  "spec_revision": "1.0.0",
+  "test_only": true,
+  "marker_cases": [
+    {
+      "id": "wrong-prefix",
+      "value": "ENC2:AAAAAAAAAAAAAAAA.Uw-K-8dFNrmpY7TxxMtziw",
+      "expected_error": "not_encrypted"
+    },
+    {
+      "id": "wrong-separator",
+      "value": "ENC1:AAAAAAAAAAAAAAAA:Uw-K-8dFNrmpY7TxxMtziw",
+      "expected_error": "invalid_envelope"
+    },
+    {
+      "id": "short-iv",
+      "value": "ENC1:AAAAAAAAAAAAAAA.Uw-K-8dFNrmpY7TxxMtziw",
+      "expected_error": "invalid_iv_length"
+    },
+    {
+      "id": "short-tag",
+      "value": "ENC1:AAAAAAAAAAAAAAAA.AA",
+      "expected_error": "invalid_ciphertext_length"
+    },
+    {
+      "id": "extra-field",
+      "value": "ENC1:AAAAAAAAAAAAAAAA.Uw-K-8dFNrmpY7TxxMtziw.extra",
+      "expected_error": "invalid_envelope"
+    }
+  ],
+  "base64url_cases": [
+    {
+      "id": "padding",
+      "value": "AA=",
+      "expected_error": "invalid_base64url"
+    },
+    {
+      "id": "standard-alphabet",
+      "value": "AA+_",
+      "expected_error": "invalid_base64url"
+    },
+    {
+      "id": "invalid-length",
+      "value": "A",
+      "expected_error": "invalid_base64url"
+    }
+  ],
+  "size_cases": [
+    {
+      "id": "marker-over-limit",
+      "operation": "marker-one-char-over-limit",
+      "expected_error": "size_limit_exceeded"
+    }
+  ],
+  "authentication_cases": [
+    {
+      "id": "tampered-tag",
+      "source_vector_id": "nist-aes256-gcm-empty",
+      "mutation": "flip-last-combined-bit",
+      "expected_error": "authentication_failed"
+    },
+    {
+      "id": "wrong-key",
+      "source_vector_id": "nist-aes256-gcm-empty",
+      "mutation": "replace-key-a5",
+      "expected_error": "authentication_failed"
+    }
+  ],
+  "unicode_cases": [
+    {
+      "id": "isolated-high-surrogate",
+      "operation": "encode-isolated-high-surrogate",
+      "expected_error": "invalid_unicode"
+    },
+    {
+      "id": "invalid-utf8-byte",
+      "operation": "decode-ff",
+      "expected_error": "invalid_utf8"
+    }
+  ]
+}

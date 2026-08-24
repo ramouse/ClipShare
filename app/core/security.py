@@ -37,6 +37,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         for name, value in SECURITY_HEADERS.items():
             response.headers[name] = value
+        # API 响应可能包含密文、明文、一次性内容或访问次数状态；缓存命中会
+        # 绕过服务端过期/计数检查，因此成功和错误都必须禁止存储。
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
         return response
 
 

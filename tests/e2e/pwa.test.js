@@ -9,18 +9,24 @@
 "use strict";
 
 const http = require("http");
+const {
+  getSameOriginSandboxUrl,
+  getSandboxBaseUrl,
+} = require("../../test_harness/sandbox_guard.js");
 
-const BASE = "http://localhost:8000";
+const BASE = getSandboxBaseUrl();
 
 /** 拉取真实服务器资源（非 200 不抛错，交由断言判定，便于聚合输出）。 */
 function httpGet(url) {
   return new Promise((resolve, reject) => {
-    const req = http.get(url, (res) => {
+    const sameOriginUrl = getSameOriginSandboxUrl(url, BASE);
+    const req = http.get(sameOriginUrl, (res) => {
       const chunks = [];
       res.on("data", (c) => chunks.push(c));
       res.on("end", () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));
     });
     req.on("error", reject);
+    req.setTimeout(10000, () => req.destroy(new Error("sandbox HTTP request timed out")));
   });
 }
 

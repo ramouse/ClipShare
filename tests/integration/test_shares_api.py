@@ -20,7 +20,7 @@ XSS_PAYLOAD = '<script>alert("xss")</script>'
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _ensure_tables() -> Iterator[None]:
+def _ensure_tables(_verified_sandbox_database: None) -> Iterator[None]:
     """会话级幂等建表：兼容未跑迁移的数据库环境（与 conftest 保持一致）。"""
     Base.metadata.create_all(engine)
     yield
@@ -35,6 +35,7 @@ def _clean_shares() -> Iterator[None]:
     """
     yield
     with engine.begin() as conn:
+        conn.execute(text("DELETE FROM idempotency_records"))
         conn.execute(text("DELETE FROM shares"))
         conn.execute(text("DELETE FROM share_files"))
         conn.execute(text("DELETE FROM shortcodes"))
@@ -289,6 +290,7 @@ def test_unexpected_error_returns_500_problem_details() -> None:
     assert body["type"] == "internal_error"
     assert body["status"] == 500
     assert body["detail"]
+    assert response.headers["cache-control"] == "no-store"
 
 
 def test_create_rate_limit_returns_429(client: TestClient) -> None:

@@ -5,10 +5,10 @@
 """
 from datetime import datetime
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
-from app.db.models import Share, ShareFile, Shortcode
+from app.db.models import IdempotencyRecord, Share, ShareFile, Shortcode
 
 
 class ShareRepository:
@@ -77,7 +77,7 @@ class ShortcodeRepository:
     """短码中心登记表的数据访问入口。
 
     code 为主键，唯一约束由数据库强制执行；与业务表同事务双写，
-    冲突时整个事务回滚（调用方重试）。
+    冲突时由调用方回滚当前 SAVEPOINT 后重试，保留可能存在的外层幂等事务。
     """
 
     @staticmethod
@@ -85,7 +85,7 @@ class ShortcodeRepository:
         """登记短码占用（kind 区分资源类型）并 flush。
 
         唯一约束冲突（短码已被任何资源占用）时抛 IntegrityError，
-        由服务层捕获后回滚重试。
+        由服务层捕获并回滚当前 SAVEPOINT 后重试。
         """
         shortcode = Shortcode(code=code, kind=kind)
         session.add(shortcode)
@@ -171,3 +171,62 @@ class ShareFileRepository:
             .returning(ShareFile)
         )
         return result.scalar_one_or_none()
+
+
+class IdempotencyRepository:
+    """幂等记录的数据访问入口。"""
+
+    @staticmethod
+    def get(
+        session: Session, *, operation: str, key_hash: str
+    ) -> IdempotencyRecord | None:
+        return session.scalars(
+            select(IdempotencyRecord).where(
+                IdempotencyRecord.operation == operation,
+                IdempotencyRecord.key_hash == key_hash,
+            )
+        ).first()
+
+    @staticmethod
+    def create(
+        session: Session,
+        *,
+        operation: str,
+        key_hash: str,
+        request_hash: str,
+        resource_kind: str,
+        resource_code: str,
+        expires_at: datetime,
+    ) -> IdempotencyRecord:
+        record = IdempotencyRecord(
+            operation=operation,
+            key_hash=key_hash,
+            request_hash=request_hash,
+            resource_kind=resource_kind,
+            resource_code=resource_code,
+            expires_at=expires_at,
+        )
+        session.add(record)
+        session.flush()
+        return record
+
+    @staticmethod
+    def delete(session: Session, record: IdempotencyRecord) -> None:
+        session.delete(record)
+        session.flush()
+
+    @staticmethod
+    def purge_expired(session: Session, *, now: datetime, limit: int) -> None:
+        """有界、并发友好地回收过期记录，避免有限 TTL 记录无限增长。"""
+        if limit <= 0:
+            raise ValueError("幂等记录清理上限必须大于 0")
+        expired_ids = (
+            select(IdempotencyRecord.id)
+            .where(IdempotencyRecord.expires_at <= now)
+            .order_by(IdempotencyRecord.expires_at, IdempotencyRecord.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        session.execute(
+            delete(IdempotencyRecord).where(IdempotencyRecord.id.in_(expired_ids))
+        )

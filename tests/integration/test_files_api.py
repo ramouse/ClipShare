@@ -16,7 +16,9 @@ import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
+from app.api.deps import get_db
 from app.core.config import get_settings
 from app.core.time import utcnow
 from app.db.base import Base
@@ -31,8 +33,15 @@ PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 DISK_NAME_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
+def _structural_enc1(plaintext_size: int) -> bytes:
+    """构造无需真实密钥的结构合法 ENC1，服务端只能验证 envelope 与大小。"""
+    combined = b"\x00" * (plaintext_size + 16)
+    encoded = base64.urlsafe_b64encode(combined).rstrip(b"=")
+    return b"ENC1:AAAAAAAAAAAAAAAA." + encoded
+
+
 @pytest.fixture(scope="session", autouse=True)
-def _ensure_tables() -> Iterator[None]:
+def _ensure_tables(_verified_sandbox_database: None) -> Iterator[None]:
     """会话级幂等建表：兼容未跑迁移的数据库环境（与 conftest 保持一致）。"""
     Base.metadata.create_all(engine)
     yield
@@ -47,6 +56,7 @@ def _clean_file_tables() -> Iterator[None]:
     """
     yield
     with engine.begin() as conn:
+        conn.execute(text("DELETE FROM idempotency_records"))
         conn.execute(text("DELETE FROM shares"))
         conn.execute(text("DELETE FROM share_files"))
         conn.execute(text("DELETE FROM shortcodes"))
@@ -198,7 +208,12 @@ def test_upload_encrypt_over_limit_422_no_residue(
     服务端兜底校验（不依赖前端开关）：验证路由对已落盘文件的补偿删除。
     """
     monkeypatch.setattr(settings, "file_encrypt_max_size", 1024)
-    response = _upload_file(client, name="secret.txt", content=b"x" * 2048, encrypted="true")
+    response = _upload_file(
+        client,
+        name="secret.txt",
+        content=_structural_enc1(2048),
+        encrypted="true",
+    )
     assert response.status_code == 422
     body = response.json()
     assert body["type"] == "file_encrypt_not_available"
@@ -269,7 +284,9 @@ def test_get_file_meta_not_consuming_views(client: TestClient) -> None:
     assert again.json()["remaining_views"] == 5
 
     # 加密文件 preview_available=False（encrypted 直接否决预览）
-    enc = _upload_file(client, name="secret.md", content=b"hidden", encrypted="true")
+    enc = _upload_file(
+        client, name="secret.md", content=_structural_enc1(6), encrypted="true"
+    )
     enc_meta = client.get(f"{API_PREFIX}/files/{enc.json()['code']}")
     assert enc_meta.status_code == 200
     assert enc_meta.json()["preview_available"] is False
@@ -312,7 +329,11 @@ def test_preview_not_available_415_no_consume(
 
     # 加密 txt → 415
     enc = _upload_file(
-        client, name="secret.txt", content=b"hidden", encrypted="true", max_views="5"
+        client,
+        name="secret.txt",
+        content=_structural_enc1(6),
+        encrypted="true",
+        max_views="5",
     )
     enc_code = enc.json()["code"]
     encrypted = client.get(f"{API_PREFIX}/files/{enc_code}/preview")
@@ -378,9 +399,10 @@ def test_encrypted_disk_bytes_no_plaintext(client: TestClient, storage_dir: Path
     就是密文本身（未被篡改/解密），下载返回密文原样，原始明文无任何残留。
     """
     plaintext = b"TOP SECRET content \xe7\xa7\x98\xe5\xaf\x86\xe5\x86\x85\xe5\xae\xb9"
-    # 模拟前端 encryptBytes 输出：ENC1:IV(base64):密文(base64)
+    # 共享固定向量：12-byte IV、严格无 padding Base64URL、ciphertext||16-byte tag。
     ciphertext = (
-        b"ENC1:" + base64.b64encode(b"0123456789abcdef") + b":" + base64.b64encode(plaintext)
+        b"ENC1:AAAAAAAAAAAAAAAA."
+        b"zqdAPU1ga24HTsXTuvOdGNDRyKeZmWvwJluYtdSKuRk"
     )
     uploaded = _upload_file(client, name="secret.txt", content=ciphertext, encrypted="true")
     assert uploaded.status_code == 201, uploaded.text
@@ -398,6 +420,20 @@ def test_encrypted_disk_bytes_no_plaintext(client: TestClient, storage_dir: Path
     assert downloaded.status_code == 200
     assert downloaded.content == ciphertext
     assert plaintext not in downloaded.content
+
+
+def test_encrypted_upload_rejects_malformed_enc1_and_cleans_disk(
+    client: TestClient, storage_dir: Path
+) -> None:
+    """encrypted=true 不得把旧冒号格式或宽松 Base64 伪装成可解密文件。"""
+    malformed = b"ENC1:AAAAAAAAAAAAAAAA:Uw+K/8dFNrmpY7TxxMtziw=="
+    response = _upload_file(
+        client, name="broken.txt", content=malformed, encrypted="true"
+    )
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["type"] == "file_encrypt_not_available"
+    assert list(storage_dir.iterdir()) == []
 
 
 # ---- 文件生命周期：404 / 410 / 跨类型 / 内容缺失 ----
@@ -459,6 +495,56 @@ def test_file_content_missing_410(client: TestClient, storage_dir: Path) -> None
     preview = client.get(f"{API_PREFIX}/files/{code}/preview")
     assert preview.status_code == 410
     assert preview.json()["type"] == "file_content_missing"
+
+
+@pytest.mark.parametrize(
+    "idempotency_key",
+    [None, "windows:commit-unknown:0001"],
+    ids=["plain-upload", "idempotent-upload"],
+)
+def test_upload_commit_ack_loss_preserves_committed_file_reference(
+    storage_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    idempotency_key: str | None,
+) -> None:
+    """commit 已在数据库成功但确认丢失时，绝不能删除已被记录引用的磁盘文件。"""
+
+    def database_with_lost_commit_ack() -> Iterator[Session]:
+        with SessionLocal() as session:
+            real_commit = session.commit
+
+            def commit_then_lose_ack() -> None:
+                real_commit()
+                raise RuntimeError("simulated commit acknowledgement loss")
+
+            monkeypatch.setattr(session, "commit", commit_then_lose_ack)
+            yield session
+
+    app.dependency_overrides[get_db] = database_with_lost_commit_ack
+    headers = {"Idempotency-Key": idempotency_key} if idempotency_key else {}
+    try:
+        with TestClient(app, raise_server_exceptions=False) as fault_client:
+            response = fault_client.post(
+                f"{API_PREFIX}/files",
+                files={"file": ("commit-unknown.txt", b"must remain", "text/plain")},
+                headers=headers,
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 500
+    assert response.json()["type"] == "internal_error"
+    assert response.headers["cache-control"] == "no-store"
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM share_files")).scalar_one() == 1
+        expected_idempotency_records = 1 if idempotency_key else 0
+        assert (
+            connection.execute(text("SELECT COUNT(*) FROM idempotency_records")).scalar_one()
+            == expected_idempotency_records
+        )
+    disk_files = list(storage_dir.iterdir())
+    assert len(disk_files) == 1
+    assert disk_files[0].read_bytes() == b"must remain"
 
 
 # ---- 限流（必须最后定义：本文件前面的上传用例已消耗同一窗口内额度） ----

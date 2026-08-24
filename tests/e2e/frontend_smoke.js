@@ -15,14 +15,19 @@
 "use strict";
 
 const http = require("http");
-const { JSDOM, requestInterceptor } = require("jsdom");
+const {
+  getSameOriginSandboxUrl,
+  getSandboxBaseUrl,
+} = require("../../test_harness/sandbox_guard.js");
 
-const BASE = "http://localhost:8000";
+const BASE = getSandboxBaseUrl();
+const { JSDOM, requestInterceptor } = require("jsdom");
 
 /** 从真实服务器拉取页面引用的脚本/样式（零本地拷贝，全真链路）。 */
 function httpGet(url) {
   return new Promise((resolve, reject) => {
-    const req = http.get(url, (res) => {
+    const sameOriginUrl = getSameOriginSandboxUrl(url, BASE);
+    const req = http.get(sameOriginUrl, (res) => {
       if (res.statusCode !== 200) {
         reject(new Error(`HTTP ${res.statusCode} for ${url}`));
         return;
@@ -32,6 +37,7 @@ function httpGet(url) {
       res.on("end", () => resolve(Buffer.concat(chunks)));
     });
     req.on("error", reject);
+    req.setTimeout(10000, () => req.destroy(new Error("sandbox HTTP request timed out")));
   });
 }
 
@@ -40,7 +46,8 @@ function liveResources() {
   return {
     interceptors: [
       requestInterceptor(async (request) => {
-        const body = await httpGet(request.url);
+        const resourceUrl = getSameOriginSandboxUrl(request.url, BASE, ["/static/"]);
+        const body = await httpGet(resourceUrl);
         const contentType = request.url.endsWith(".css") ? "text/css" : "text/javascript";
         return new Response(body, { headers: { "Content-Type": contentType } });
       }),
@@ -84,18 +91,11 @@ async function waitRender(window, timeoutMs = 8000) {
   throw new Error("渲染超时");
 }
 
-async function loadViewPage(code, apiResponse) {
-  const html = await new Promise((resolve, reject) => {
-    http
-      .get(`${BASE}/s/${code}`, (res) => {
-        const chunks = [];
-        res.on("data", (c) => chunks.push(c));
-        res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-      })
-      .on("error", reject);
-  });
+async function loadViewPage(code, apiResponse, fragment = "") {
+  const pageUrl = getSameOriginSandboxUrl(`${BASE}/s/${code}`, BASE, ["/s/"]);
+  const html = (await httpGet(pageUrl)).toString("utf8");
   const dom = new JSDOM(html, {
-    url: `${BASE}/s/${code}`,
+    url: pageUrl + fragment,
     runScripts: "dangerously",
     resources: liveResources(),
     beforeParse: (window) => beforeParse(window, apiResponse),
@@ -407,6 +407,30 @@ async function testFileCardEncrypted() {
   dom.window.close();
 }
 
+/** C1：fragment 必须整体严格匹配，不能把带 padding/非法尾部的值截成合法前缀。 */
+async function testEncryptedFragmentRejectsInvalidSuffix() {
+  const dom = await loadViewPage(
+    "badkey",
+    {
+      status: 200,
+      body: {
+        code: "badkey",
+        content: "ENC1:AAAAAAAAAAAAAAAA.Uw-K-8dFNrmpY7TxxMtziw",
+        expires_at: null,
+        remaining_views: 0,
+        created_at: "2026-08-24T00:00:00.000000Z",
+      },
+    },
+    "#k=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  );
+  const doc = dom.window.document;
+  assert(
+    doc.getElementById("error-title").textContent === "密钥缺失或错误",
+    "ENC fragment 拒绝 padding/非法尾部"
+  );
+  dom.window.close();
+}
+
 (async () => {
   try {
     console.log("== M4 前端浏览器级冒烟 + v0.2 文件卡片（jsdom + 真实服务器资源）==");
@@ -423,6 +447,7 @@ async function testFileCardEncrypted() {
     await testErrorPage("share_views_exhausted", "分享访问次数已耗尽");
     await testFileCardRender();
     await testFileCardEncrypted();
+    await testEncryptedFragmentRejectsInvalidSuffix();
     console.log(`\n结果: ${passed} passed, ${failed} failed`);
     process.exit(failed === 0 ? 0 : 1);
   } catch (err) {

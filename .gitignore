@@ -34,6 +34,8 @@ CLAUDE.md
 .ruff_cache/
 .coverage
 htmlcov/
+# v0.3 客户端与专用测试沙盒：所有 Agent/测试临时状态统一收敛于此
+.sandbox/
 
 # IDE / 系统
 .idea/

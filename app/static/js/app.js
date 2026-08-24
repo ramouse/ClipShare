@@ -53,9 +53,30 @@
   /**
    * 本次创建使用的密钥（base64url 字符串）。
    * 仅存在于浏览器内存与结果链接的 fragment（#k=）中，绝不写入日志/DB/API 请求体。
-   * 每次加密创建都会重新生成新密钥（fragment 不随 HTTP 请求发送，服务器拿不到）。
+   * 每次新的用户创建操作生成新密钥；同一操作的幂等重试必须复用原密钥与密文。
+   * fragment 不随 HTTP 请求发送，服务器拿不到密钥。
    */
   let activeKeyB64 = null;
+  /** 网络结果未知时保留同一请求材料，重试不得重新生成密钥/IV/密文。 */
+  let pendingTextRequest = null;
+  let pendingFileRequest = null;
+
+  /** 生成不含业务数据的高熵幂等键；满足服务端 8–128 位 ASCII 契约。 */
+  function newIdempotencyKey() {
+    if (!window.crypto || !window.crypto.getRandomValues) {
+      throw new Error("当前环境无法生成安全的幂等键（需 HTTPS 或 localhost 访问）");
+    }
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    return "web:" + Array.from(bytes, function (value) {
+      return value.toString(16).padStart(2, "0");
+    }).join("");
+  }
+
+  function invalidatePendingRequests() {
+    pendingTextRequest = null;
+    pendingFileRequest = null;
+  }
 
   /** 显示错误信息（textContent 赋值，杜绝 XSS）。 */
   function showError(message) {
@@ -150,6 +171,7 @@
   /** 记录当前文件并刷新信息区 / 加密开关 / 提交按钮状态。 */
   function selectFile(file) {
     selectedFile = file;
+    pendingFileRequest = null;
     fileInfo.textContent = file.name + "（" + formatSize(file.size) + "）";
     updateFileEncryptState();
   }
@@ -185,7 +207,12 @@
 
   /** 字数统计。 */
   contentInput.addEventListener("input", function () {
+    pendingTextRequest = null;
     charCounter.textContent = contentInput.value.length + " / " + MAX_LENGTH;
+  });
+
+  [expirySelect, maxViewsSelect, encryptToggle].forEach(function (control) {
+    control.addEventListener("change", invalidatePendingRequests);
   });
 
   /** 复制文本到剪贴板：优先 Clipboard API，降级 execCommand（非安全上下文可用）。 */
@@ -274,9 +301,49 @@
     const key = await ClipShareCrypto.generateKey();
     const source = new Uint8Array(await file.arrayBuffer());
     const encrypted = await ClipShareCrypto.encryptBytes(source, key);
-    activeKeyB64 = await ClipShareCrypto.exportKeyToBase64Url(key);
+    const keyB64 = await ClipShareCrypto.exportKeyToBase64Url(key);
     // 用密文 Blob 替换 FormData 中的 file 字段（保留原文件名与类型）
-    return new Blob([encrypted], { type: file.type || "application/octet-stream" });
+    return {
+      blob: new Blob([encrypted], { type: file.type || "application/octet-stream" }),
+      keyB64: keyB64,
+    };
+  }
+
+  /** 当前文件表单是否仍对应已准备的请求；File 用对象身份避免同名同大小误判。 */
+  function isCurrentFileRequest(request) {
+    return (
+      request &&
+      request.sourceFile === selectedFile &&
+      request.expiry === expirySelect.value &&
+      request.maxViews === maxViewsSelect.value &&
+      request.encrypted === encryptToggle.checked
+    );
+  }
+
+  /** 首次准备上传材料；网络失败后的同表单重试直接复用该对象。 */
+  async function prepareFileRequest() {
+    if (isCurrentFileRequest(pendingFileRequest)) {
+      activeKeyB64 = pendingFileRequest.keyB64;
+      return pendingFileRequest;
+    }
+    let uploadFile = selectedFile;
+    let keyB64 = null;
+    if (encryptToggle.checked) {
+      const encrypted = await encryptFileForUpload(selectedFile);
+      uploadFile = encrypted.blob;
+      keyB64 = encrypted.keyB64;
+    }
+    pendingFileRequest = {
+      sourceFile: selectedFile,
+      uploadFile: uploadFile,
+      expiry: expirySelect.value,
+      maxViews: maxViewsSelect.value,
+      encrypted: encryptToggle.checked,
+      keyB64: keyB64,
+      idempotencyKey: newIdempotencyKey(),
+    };
+    activeKeyB64 = keyB64;
+    return pendingFileRequest;
   }
 
   /**
@@ -295,48 +362,92 @@
     }
 
     // 加密路径：≤10MB 时浏览器全内存加密（服务端 422 双保险兜底）
-    activeKeyB64 = null;
-    let uploadFile = selectedFile;
     if (encryptToggle.checked) {
       if (selectedFile.size > FILE_ENCRYPT_MAX) {
         showError("文件超过 10MB 加密上限，请关闭加密后明文直传");
         return;
       }
-      try {
-        uploadFile = await encryptFileForUpload(selectedFile);
-      } catch (err) {
-        showError(err && err.message ? err.message : "加密失败，请重试");
-        return;
-      }
+    }
+
+    let request;
+    try {
+      request = await prepareFileRequest();
+    } catch (err) {
+      showError(err && err.message ? err.message : "加密失败，请重试");
+      return;
     }
 
     const fd = new FormData();
-    fd.append("file", uploadFile, selectedFile.name);
-    fd.append("expiry", expirySelect.value);
-    fd.append("max_views", maxViewsSelect.value);
-    fd.append("encrypted", encryptToggle.checked ? "true" : "false");
+    fd.append("file", request.uploadFile, request.sourceFile.name);
+    fd.append("expiry", request.expiry);
+    fd.append("max_views", request.maxViews);
+    fd.append("encrypted", request.encrypted ? "true" : "false");
 
+    let response;
     try {
-      const response = await fetch(API_PREFIX + "/files", { method: "POST", body: fd });
-      if (response.ok) {
+      response = await fetch(API_PREFIX + "/files", {
+        method: "POST",
+        headers: { "Idempotency-Key": request.idempotencyKey },
+        body: fd,
+      });
+    } catch (err) {
+      showError("上传结果未知；保持表单不变再次提交时将复用同一幂等请求。");
+      return;
+    }
+    if (response.ok) {
+      try {
         const data = await response.json();
         showResult(data, true);
-        return;
+        pendingFileRequest = null;
+      } catch (err) {
+        showError("上传已获成功响应但结果无法解析；保持表单不变再次提交可恢复同一结果。");
       }
-      // 错误体统一为 Problem Details（RFC 9457）：{type, title, status, detail}
-      let detail = "上传失败（HTTP " + response.status + "）";
-      try {
-        const body = await response.json();
-        if (body && typeof body.detail === "string") {
-          detail = body.detail;
-        }
-      } catch (e) {
-        // 响应体不是 JSON（理论不会发生：全局处理器保证所有响应均为 JSON）
-      }
-      throw new Error(detail);
-    } catch (err) {
-      showError(err && err.message ? err.message : "网络错误，请重试");
+      return;
     }
+    // 错误体统一为 Problem Details（RFC 9457）：{type, title, status, detail}
+    let detail = "上传失败（HTTP " + response.status + "）";
+    try {
+      const body = await response.json();
+      if (body && typeof body.detail === "string") {
+        detail = body.detail;
+      }
+    } catch (e) {
+      // 响应体不是 JSON（理论不会发生：全局处理器保证所有响应均为 JSON）
+    }
+    showError(detail);
+  }
+
+  function currentTextSignature() {
+    return JSON.stringify({
+      content: contentInput.value,
+      expiry: expirySelect.value,
+      maxViews: maxViewsSelect.value,
+      encrypted: encryptToggle.checked,
+    });
+  }
+
+  /** 首次生成请求体与密钥；结果未知后的重试复用同一密文与 Idempotency-Key。 */
+  async function prepareTextRequest() {
+    const signature = currentTextSignature();
+    if (pendingTextRequest && pendingTextRequest.signature === signature) {
+      activeKeyB64 = pendingTextRequest.keyB64;
+      return pendingTextRequest;
+    }
+    const payload = buildPayload();
+    let keyB64 = null;
+    if (encryptToggle.checked) {
+      const result = await encryptPayloadContent(payload.content);
+      payload.content = result.encoded;
+      keyB64 = result.keyB64;
+    }
+    pendingTextRequest = {
+      signature: signature,
+      payload: payload,
+      keyB64: keyB64,
+      idempotencyKey: newIdempotencyKey(),
+    };
+    activeKeyB64 = keyB64;
+    return pendingTextRequest;
   }
 
   /* ------------------------------------------------------------------ */
@@ -417,52 +528,48 @@
     submitBtn.disabled = true;
     submitBtn.textContent = "创建中…";
 
-    // 加密模式：先加密再发送（服务器只收到密文，密钥只进链接 fragment）
-    activeKeyB64 = null;
-    const payload = buildPayload();
-    if (encryptToggle.checked) {
+    let request;
+    try {
+      request = await prepareTextRequest();
+      let response;
       try {
-        const result = await encryptPayloadContent(payload.content);
-        payload.content = result.encoded;
-        activeKeyB64 = result.keyB64;
+        response = await fetch(API_PREFIX + "/shares", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": request.idempotencyKey,
+          },
+          body: JSON.stringify(request.payload),
+        });
       } catch (err) {
-        submitBtn.disabled = false;
-        submitBtn.textContent = "创建分享";
-        showError(err && err.message ? err.message : "加密失败，请重试");
+        showError("创建结果未知；保持表单不变再次提交时将复用同一幂等请求。");
         return;
       }
-    }
-
-    fetch(API_PREFIX + "/shares", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    })
-      .then(async function (response) {
-        if (response.ok) {
-          return response.json();
-        }
-        // 错误体统一为 Problem Details（RFC 9457）：{type, title, status, detail}
-        let detail = "创建失败（HTTP " + response.status + "）";
+      if (response.ok) {
         try {
-          const body = await response.json();
-          if (body && typeof body.detail === "string") {
-            detail = body.detail;
-          }
-        } catch (e) {
-          // 响应体不是 JSON（理论不会发生：全局处理器保证所有响应均为 JSON）
+          const data = await response.json();
+          showResult(data, false);
+          pendingTextRequest = null;
+        } catch (err) {
+          showError("创建已获成功响应但结果无法解析；保持表单不变再次提交可恢复同一结果。");
         }
-        throw new Error(detail);
-      })
-      .then(function (data) {
-        showResult(data, false);
-      })
-      .catch(function (err) {
-        showError(err && err.message ? err.message : "网络错误，请重试");
-      })
-      .finally(function () {
-        submitBtn.disabled = false;
-        submitBtn.textContent = "创建分享";
-      });
+        return;
+      }
+      let detail = "创建失败（HTTP " + response.status + "）";
+      try {
+        const body = await response.json();
+        if (body && typeof body.detail === "string") {
+          detail = body.detail;
+        }
+      } catch (e) {
+        // 全局处理器应保证 JSON；保留状态码兜底。
+      }
+      showError(detail);
+    } catch (err) {
+      showError(err && err.message ? err.message : "加密失败，请重试");
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "创建分享";
+    }
   });
 })();

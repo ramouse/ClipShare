@@ -1,10 +1,10 @@
 """分享接口的请求 / 响应模型。"""
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
+from app.core.time import Rfc3339UtcDatetime
 
 settings = get_settings()
 
@@ -22,9 +22,9 @@ class ShareCreatedResponse(BaseModel):
 
     code: str
     url: str
-    expires_at: datetime | None
+    expires_at: Rfc3339UtcDatetime | None
     max_views: int | None
-    created_at: datetime
+    created_at: Rfc3339UtcDatetime
 
 
 class ShareReadResponse(BaseModel):
@@ -32,6 +32,6 @@ class ShareReadResponse(BaseModel):
 
     code: str
     content: str
-    expires_at: datetime | None
+    expires_at: Rfc3339UtcDatetime | None
     remaining_views: int | None
-    created_at: datetime
+    created_at: Rfc3339UtcDatetime

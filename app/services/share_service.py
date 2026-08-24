@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.errors import (
+    IdempotencyReplayUnavailableError,
     ShareExpiredError,
     ShareNotFoundError,
     ShortcodeGenerationError,
@@ -28,6 +29,7 @@ def create_share(
     expiry: Expiry,
     max_views: int | None,
     now: datetime,
+    commit: bool = True,
 ) -> Share:
     """创建分享：短码双写（shortcodes + shares）+ 唯一约束冲突重试。
 
@@ -35,29 +37,40 @@ def create_share(
     任何一类资源（文本/文件）占用过的短码都不可能再被另一类使用，
     跨类型全局唯一由 shortcodes 主键约束兜底。
     now 由调用方注入（naive UTC），便于测试与全链路时间约定统一。
-    冲突重试：捕获唯一约束 IntegrityError 后回滚事务并重新生成短码，
-    最多 SHORTCODE_MAX_RETRIES 次，仍失败抛 ShortcodeGenerationError（映射 500）。
+    冲突重试：捕获唯一约束 IntegrityError 后只回滚本次 SAVEPOINT 并重新生成
+    短码，保留外层幂等事务锁；最多 SHORTCODE_MAX_RETRIES 次，仍失败抛
+    ShortcodeGenerationError（映射 500）。
     """
     expires = expires_at(expiry, now)
     last_error: IntegrityError | None = None
     for _ in range(SHORTCODE_MAX_RETRIES):
         code = generate_shortcode()
         try:
-            ShortcodeRepository.create(session, code=code, kind="share")
-            share = ShareRepository.create(
-                session,
-                code=code,
-                content=content,
-                expires_at=expires,
-                max_views=max_views,
-            )
-            session.commit()
+            # SAVEPOINT 让短码冲突只回滚本次尝试；外层幂等事务与 advisory
+            # transaction lock 保持有效，避免并发重试窗口。
+            with session.begin_nested():
+                ShortcodeRepository.create(session, code=code, kind="share")
+                share = ShareRepository.create(
+                    session,
+                    code=code,
+                    content=content,
+                    expires_at=expires,
+                    max_views=max_views,
+                )
+            if commit:
+                session.commit()
             return share
         except IntegrityError as exc:
-            # 冲突后必须回滚：事务处于失败状态，不回滚无法继续执行
-            session.rollback()
             last_error = exc
     raise ShortcodeGenerationError(f"连续 {SHORTCODE_MAX_RETRIES} 次短码冲突") from last_error
+
+
+def get_share_for_replay(session: Session, *, code: str) -> Share:
+    """读取幂等记录指向的创建结果，不消耗访问次数。"""
+    share = ShareRepository.get_by_code(session, code)
+    if share is None:
+        raise IdempotencyReplayUnavailableError("幂等记录对应的文本分享不存在，请使用新键重试")
+    return share
 
 
 def view_share(session: Session, *, code: str, now: datetime) -> Share:

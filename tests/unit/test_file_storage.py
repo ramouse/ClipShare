@@ -3,6 +3,7 @@
 全程使用 tmp_path，不触碰真实存储目录；超限用例通过带读取计数器的
 源断言「未读穿」与「磁盘无残留」两条红线。
 """
+import hashlib
 import io
 from pathlib import Path
 
@@ -36,6 +37,16 @@ def test_save_streamed_roundtrip_bytes_identical(tmp_path: Path) -> None:
     # stored_name 为 32 位十六进制、无扩展名（磁盘不暴露原始文件名）
     assert stored == stored.lower() and len(stored) == 32
     assert (tmp_path / stored).read_bytes() == content
+
+
+def test_save_streamed_with_digest_returns_verified_size_and_sha256(tmp_path: Path) -> None:
+    """上传落盘与幂等指纹共用同一次流式读取，不需要二次全量加载。"""
+    content = b"digest-me\x00\xff" * 100
+    storage = FileStorage(tmp_path)
+    result = storage.save_streamed_with_digest(io.BytesIO(content), max_size=1024 * 1024)
+    assert result.size_bytes == len(content)
+    assert result.sha256 == hashlib.sha256(content).hexdigest()
+    assert (tmp_path / result.stored_name).read_bytes() == content
 
 
 def test_save_streamed_aborts_before_reading_all(tmp_path: Path) -> None:

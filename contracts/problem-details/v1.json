@@ -1,0 +1,26 @@
+{
+  "contract_version": "1.0.0",
+  "media_type": "application/problem+json",
+  "required_fields": ["type", "title", "status", "detail"],
+  "errors": [
+    {"type": "file_content_missing", "status": 410},
+    {"type": "file_encrypt_not_available", "status": 422},
+    {"type": "file_expired", "status": 410},
+    {"type": "file_not_found", "status": 404},
+    {"type": "file_too_large", "status": 413},
+    {"type": "file_type_not_allowed", "status": 415},
+    {"type": "file_views_exhausted", "status": 410},
+    {"type": "http_error", "status": "http-status"},
+    {"type": "idempotency_conflict", "status": 409},
+    {"type": "idempotency_key_invalid", "status": 400},
+    {"type": "idempotency_replay_unavailable", "status": 409},
+    {"type": "internal_error", "status": 500},
+    {"type": "preview_not_available", "status": 415},
+    {"type": "rate_limited", "status": 429},
+    {"type": "share_expired", "status": 410},
+    {"type": "share_not_found", "status": 404},
+    {"type": "share_views_exhausted", "status": 410},
+    {"type": "shortcode_generation_failed", "status": 500},
+    {"type": "validation_error", "status": 422}
+  ]
+}

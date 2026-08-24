@@ -1,7 +1,7 @@
 """文件服务层单元测试：短码冲突重试、过期懒删、404/410 分支（全程 mock）。"""
 from datetime import datetime, timedelta
 from typing import TypedDict
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -77,8 +77,8 @@ def _create_args() -> _CreateArgs:
 
 
 def test_create_file_share_success_writes_both_tables() -> None:
-    """正常创建：短码中心表先登记（kind=file），业务表随后写入，提交一次。"""
-    session = Mock()
+    """正常创建：短码中心表先登记，业务表随后写入，但提交留给调用方。"""
+    session = MagicMock()
     record = _make_file(code="ab12cd")
     with (
         patch.object(file_service, "generate_shortcode", return_value="ab12cd"),
@@ -94,12 +94,12 @@ def test_create_file_share_success_writes_both_tables() -> None:
     assert file_create_kwargs["code"] == "ab12cd"
     assert file_create_kwargs["expires_at"] == NOW + timedelta(days=1)
     assert file_create_kwargs["max_views"] == 3
-    session.commit.assert_called_once()
+    session.commit.assert_not_called()
 
 
 def test_create_file_share_retries_on_shortcode_conflict() -> None:
-    """短码冲突：第一次业务表唯一约束冲突，回滚后换码重试第二次成功。"""
-    session = Mock()
+    """短码冲突：第一次 SAVEPOINT 回滚后换码重试第二次成功。"""
+    session = MagicMock()
     record = _make_file(code="new123")
     with (
         patch.object(file_service, "generate_shortcode", side_effect=["dup001", "new123"]),
@@ -115,13 +115,14 @@ def test_create_file_share_retries_on_shortcode_conflict() -> None:
     assert shortcode_create.call_args_list[0].kwargs["code"] == "dup001"
     assert shortcode_create.call_args_list[1].kwargs["code"] == "new123"
     assert shortcode_create.call_args_list[0].kwargs["kind"] == "file"
-    assert session.rollback.call_count == 1
-    session.commit.assert_called_once()
+    assert session.begin_nested.call_count == 2
+    session.rollback.assert_not_called()
+    session.commit.assert_not_called()
 
 
 def test_create_file_share_gives_up_after_max_retries() -> None:
     """连续冲突超过上限：抛 ShortcodeGenerationError（映射 500）。"""
-    session = Mock()
+    session = MagicMock()
     side_effect = [_integrity_error()] * file_service.SHORTCODE_MAX_RETRIES
     with (
         patch.object(file_service.ShortcodeRepository, "create"),
@@ -129,13 +130,14 @@ def test_create_file_share_gives_up_after_max_retries() -> None:
         pytest.raises(ShortcodeGenerationError),
     ):
         file_service.create_file_share(session, **_create_args())
-    assert session.rollback.call_count == file_service.SHORTCODE_MAX_RETRIES
+    assert session.begin_nested.call_count == file_service.SHORTCODE_MAX_RETRIES
+    session.rollback.assert_not_called()
     session.commit.assert_not_called()
 
 
 def test_create_file_share_code_is_base62() -> None:
     """短码由服务层随机生成（6 位 Base62）：形状与字符集符合契约。"""
-    session = Mock()
+    session = MagicMock()
     with (
         patch.object(file_service.ShortcodeRepository, "create"),
         patch.object(
@@ -146,6 +148,20 @@ def test_create_file_share_code_is_base62() -> None:
     code = file_create.call_args.kwargs["code"]
     assert len(code) == 6
     assert all(ch in ALPHABET for ch in code)
+
+
+def test_create_file_share_always_leaves_commit_to_outer_transaction() -> None:
+    """文件创建永不自行提交，使路由可以安全处理 commit-unknown 状态。"""
+    session = MagicMock()
+    record = _make_file()
+    with (
+        patch.object(file_service.ShortcodeRepository, "create"),
+        patch.object(file_service.ShareFileRepository, "create", return_value=record),
+    ):
+        result = file_service.create_file_share(session, **_create_args())
+    assert result is record
+    session.begin_nested.assert_called_once()
+    session.commit.assert_not_called()
 
 
 # ---- 元数据读取：不消耗次数，过期懒删 ----

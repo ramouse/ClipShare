@@ -1,6 +1,6 @@
 """分享服务层单元测试：短码冲突重试、到期时间计算与读取判定（全程 mock，无需数据库）。"""
 from datetime import datetime, timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -38,7 +38,7 @@ def _integrity_error() -> IntegrityError:
 
 def test_create_share_success() -> None:
     """正常创建：短码生成一次、入库参数正确、提交事务。"""
-    session = Mock()
+    session = MagicMock()
     share = _make_share(code="ab12cd")
     with patch.object(share_service.ShareRepository, "create", return_value=share) as repo_create:
         result = share_service.create_share(
@@ -58,8 +58,8 @@ def test_create_share_success() -> None:
 
 
 def test_create_share_retries_on_integrity_error() -> None:
-    """短码冲突：第一次唯一约束冲突，回滚后重试第二次成功。"""
-    session = Mock()
+    """短码冲突：第一次 SAVEPOINT 回滚后重试第二次成功。"""
+    session = MagicMock()
     share = _make_share(code="retry00")
     repo_create = Mock(side_effect=[_integrity_error(), share])
     with patch.object(share_service.ShareRepository, "create", repo_create):
@@ -68,13 +68,14 @@ def test_create_share_retries_on_integrity_error() -> None:
         )
     assert result is share
     assert repo_create.call_count == 2
-    assert session.rollback.call_count == 1
+    assert session.begin_nested.call_count == 2
+    session.rollback.assert_not_called()
     session.commit.assert_called_once()
 
 
 def test_create_share_gives_up_after_max_retries() -> None:
     """连续冲突超过上限：抛 ShortcodeGenerationError（映射 500）。"""
-    session = Mock()
+    session = MagicMock()
     side_effect = [_integrity_error()] * share_service.SHORTCODE_MAX_RETRIES
     with (
         patch.object(
@@ -86,13 +87,14 @@ def test_create_share_gives_up_after_max_retries() -> None:
             session, content="x", expiry=Expiry.ONE_HOUR, max_views=None, now=NOW
         )
     assert repo_create.call_count == share_service.SHORTCODE_MAX_RETRIES
-    assert session.rollback.call_count == share_service.SHORTCODE_MAX_RETRIES
+    assert session.begin_nested.call_count == share_service.SHORTCODE_MAX_RETRIES
+    session.rollback.assert_not_called()
     session.commit.assert_not_called()
 
 
 def test_create_share_expires_at_uses_injected_now() -> None:
     """expires_at 由注入的 now 计算：四档档位各自正确。"""
-    session = Mock()
+    session = MagicMock()
     cases = [
         (Expiry.ONE_HOUR, NOW + timedelta(hours=1)),
         (Expiry.ONE_DAY, NOW + timedelta(days=1)),
@@ -105,6 +107,24 @@ def test_create_share_expires_at_uses_injected_now() -> None:
         ) as repo_create:
             share_service.create_share(session, content="x", expiry=expiry, max_views=None, now=NOW)
         assert repo_create.call_args.kwargs["expires_at"] == expected
+
+
+def test_create_share_can_leave_commit_to_outer_idempotency_transaction() -> None:
+    """幂等创建可延迟提交，使业务资源与幂等记录在同一外层事务落库。"""
+    session = MagicMock()
+    share = _make_share()
+    with patch.object(share_service.ShareRepository, "create", return_value=share):
+        result = share_service.create_share(
+            session,
+            content="x",
+            expiry=Expiry.FOREVER,
+            max_views=None,
+            now=NOW,
+            commit=False,
+        )
+    assert result is share
+    session.begin_nested.assert_called_once()
+    session.commit.assert_not_called()
 
 
 def test_share_url_strips_trailing_slash() -> None:

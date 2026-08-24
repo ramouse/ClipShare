@@ -1,0 +1,29 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0.400-noble-amd64@sha256:0e53453ccfc8ff2d51319fe80c678971c6d0f8008dff3565fa88e15840b69854
+
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
+    DOTNET_NOLOGO=1 \
+    NUGET_XMLDOC_MODE=skip
+
+RUN test "$(dotnet --version)" = "10.0.400"
+
+WORKDIR /app
+
+COPY clients/windows ./clients/windows
+COPY contracts ./contracts
+
+WORKDIR /app/clients/windows
+
+RUN dotnet restore \
+      tests/ClipShare.Windows.Crypto.ContractTests/ClipShare.Windows.Crypto.ContractTests.csproj \
+    && dotnet build \
+      tests/ClipShare.Windows.Crypto.ContractTests/ClipShare.Windows.Crypto.ContractTests.csproj \
+      --configuration Release --no-restore --property:ContinuousIntegrationBuild=true
+
+ARG SANDBOX_RUN_ID
+RUN test -n "${SANDBOX_RUN_ID}"
+LABEL com.clipshare.sandbox.run-id="${SANDBOX_RUN_ID}"
+
+USER 1654:1654
+
+CMD ["dotnet", "/app/clients/windows/tests/ClipShare.Windows.Crypto.ContractTests/bin/Release/net10.0/ClipShare.Windows.Crypto.ContractTests.dll", "/app/contracts/crypto-vectors/enc1/positive-vectors.json", "/app/contracts/crypto-vectors/enc1/negative-vectors.json"]

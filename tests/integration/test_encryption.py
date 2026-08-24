@@ -6,7 +6,6 @@
 - 密文含 + / = - _ 等字符时 JSON/传输层不损坏。
 真实加解密行为由 tests/e2e/encryption.test.js（宿主机 Node，真实浏览器同款 crypto.js）验证。
 """
-import base64
 from collections.abc import Iterator
 
 import pytest
@@ -19,19 +18,14 @@ from app.main import app
 
 API_PREFIX = "/api/v1"
 PLAINTEXT = "绝密内容 secret-content-42"
-# 密文标记串：含 base64url（- _）与标准 base64（+ / =）字符，验证服务器透明存储
-MARKER_IV = b"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c"
-MARKER_CIPHER = b"\xff\xfe\x00\x11+/\x3d\xd0\x9f\x92\x88\xab\xcd\xef\x01\x02"
+# ENC1 共享固定向量之一；文本分享服务仍将其视为普通不透明字符串。
 ENCRYPTED_CONTENT = (
-    "ENC1:"
-    + base64.urlsafe_b64encode(MARKER_IV).decode("ascii")
-    + "."
-    + base64.b64encode(MARKER_CIPHER).decode("ascii")
+    "ENC1:AAAAAAAAAAAAAAAA.zqdAPU1ga24HTsXTuvOdGNDRyKeZmWvwJluYtdSKuRk"
 )
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _ensure_tables() -> Iterator[None]:
+def _ensure_tables(_verified_sandbox_database: None) -> Iterator[None]:
     """会话级幂等建表（与既有集成测试保持一致）。"""
     Base.metadata.create_all(engine)
     yield
@@ -39,10 +33,13 @@ def _ensure_tables() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _clean_shares() -> Iterator[None]:
-    """每个用例结束后清空 shares 表，保证用例间数据互不干扰。"""
+    """每个用例结束后按安全顺序清空测试库资源。"""
     yield
     with engine.begin() as conn:
+        conn.execute(text("DELETE FROM idempotency_records"))
         conn.execute(text("DELETE FROM shares"))
+        conn.execute(text("DELETE FROM share_files"))
+        conn.execute(text("DELETE FROM shortcodes"))
 
 
 @pytest.fixture()
@@ -53,7 +50,7 @@ def client() -> Iterator[TestClient]:
 
 
 def test_encrypted_content_api_roundtrip_unchanged(client: TestClient) -> None:
-    """密文分享：创建/读取/raw 全链路原样往返（含 + / = - _ 字符，无任何转义破坏）。"""
+    """严格 ENC1 文本经创建/读取/raw 全链路原样往返。"""
     payload = {"content": ENCRYPTED_CONTENT, "expiry": "1h"}
     response = client.post(f"{API_PREFIX}/shares", json=payload)
     assert response.status_code == 201

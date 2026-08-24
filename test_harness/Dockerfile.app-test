@@ -1,0 +1,39 @@
+FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
+
+ARG PIP_INDEX_URL=https://pypi.org/simple
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN groupadd --system app \
+    && useradd --system --uid 1000 --gid app --home-dir /app app
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY app/__init__.py ./app/__init__.py
+COPY cli/__init__.py ./cli/__init__.py
+
+RUN pip install --upgrade pip -i "${PIP_INDEX_URL}" \
+    && pip install -e ".[dev]" -i "${PIP_INDEX_URL}"
+
+COPY app ./app
+COPY cli ./cli
+COPY contracts ./contracts
+COPY tests ./tests
+COPY test_harness/__init__.py test_harness/sandbox_guard.py ./test_harness/
+COPY alembic.ini ./
+COPY migrations ./migrations
+
+RUN mkdir -p /app/.runtime/files \
+    && chown -R app:app /app
+
+ARG SANDBOX_RUN_ID
+RUN test -n "${SANDBOX_RUN_ID}"
+LABEL com.clipshare.sandbox.run-id="${SANDBOX_RUN_ID}"
+
+USER 1000:1000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

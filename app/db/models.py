@@ -1,7 +1,7 @@
 """ORM 模型：shares / shortcodes / share_files 表。"""
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, String, Text, func, text
+from sqlalchemy import BigInteger, CheckConstraint, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -83,3 +83,31 @@ class ShareFile(Base):
     # None 表示不限访问次数（预览 + 下载共享）
     max_views: Mapped[int | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+
+class IdempotencyRecord(Base):
+    """创建型请求的有限期幂等结果；不保存原始幂等键或请求内容。"""
+
+    __tablename__ = "idempotency_records"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 只保存 Idempotency-Key 的 SHA-256，避免把客户端随机令牌原文落库。
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    resource_code: Mapped[str] = mapped_column(String(8), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("operation", "key_hash", name="uq_idempotency_operation_key"),
+        CheckConstraint(
+            "operation IN ('create_share', 'upload_file')",
+            name="ck_idempotency_operation",
+        ),
+        CheckConstraint(
+            "resource_kind IN ('share', 'file')",
+            name="ck_idempotency_resource_kind",
+        ),
+    )

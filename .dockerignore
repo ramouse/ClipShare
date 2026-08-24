@@ -10,11 +10,13 @@ __pycache__
 .ruff_cache
 .coverage
 htmlcov
+.sandbox
 .env
 .env.*
 !.env.example
 !.env.prod.example
-tests
+node_modules
+data
 pgdata
 dist
 build

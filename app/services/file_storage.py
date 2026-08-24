@@ -4,7 +4,9 @@
 save_streamed 流中累计计数，超限立即中断并清理半成品文件，
 保证「413 响应后磁盘无残留」。
 """
+import hashlib
 import secrets
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
@@ -12,6 +14,15 @@ from app.core.errors import ShareFileTooLargeError
 
 # 流式读写分块大小：64KB；超过阈值立即中断而非读到文件尾
 CHUNK_SIZE = 64 * 1024
+
+
+@dataclass(frozen=True)
+class StoredFile:
+    """一次流式落盘的不可变结果。"""
+
+    stored_name: str
+    size_bytes: int
+    sha256: str
 
 
 class FileStorage:
@@ -45,10 +56,15 @@ class FileStorage:
            ShareFileTooLargeError（413），保证源未被读穿、磁盘无超限数据；
         2. 任何异常路径（含超限）都 unlink 半成品文件，磁盘保持干净。
         """
+        return self.save_streamed_with_digest(source, max_size=max_size).stored_name
+
+    def save_streamed_with_digest(self, source: BinaryIO, *, max_size: int) -> StoredFile:
+        """流式落盘并同时返回字节数与 SHA-256，供上传幂等指纹使用。"""
         stored_name = secrets.token_hex(16)
         target = self.path(stored_name)
         target.parent.mkdir(parents=True, exist_ok=True)
         written = 0
+        digest = hashlib.sha256()
         try:
             with target.open("wb") as out:
                 while True:
@@ -61,7 +77,12 @@ class FileStorage:
                             f"文件超过大小上限（{max_size} 字节）"
                         )
                     out.write(chunk)
-            return stored_name
+                    digest.update(chunk)
+            return StoredFile(
+                stored_name=stored_name,
+                size_bytes=written,
+                sha256=digest.hexdigest(),
+            )
         except BaseException:
             # 超限 / IO 错误 / 中断：半成品一律清理，磁盘不允许残留
             target.unlink(missing_ok=True)

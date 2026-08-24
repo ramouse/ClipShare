@@ -1,0 +1,7 @@
+FROM postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+
+ARG SANDBOX_RUN_ID
+
+LABEL com.clipshare.sandbox.run-id="${SANDBOX_RUN_ID}"
+
+RUN test -n "${SANDBOX_RUN_ID}"

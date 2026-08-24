@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     rate_limit_upload: str = "30/minute"
     rate_limit_file_read: str = "60/minute"
     rate_limit_file_download: str = "60/minute"
+    # 幂等结果保留 24 小时；最短分享有效期为 1 小时，允许移动网络延迟重试。
+    idempotency_ttl_seconds: int = 24 * 60 * 60
 
     @field_validator("file_allowed_extensions_set", mode="before")
     @classmethod

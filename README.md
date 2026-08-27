@@ -120,14 +120,6 @@ Dockerfile 或工具链版本变化时才显式传入 `-Rebuild`。该入口不�
 - 书面 API 文档（端点/参数/错误码/curl 示例）：[docs/API.md](docs/API.md)
 - 交互式 API 文档：应用运行后访问 `/docs`（OpenAPI）
 - 部署手册：[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
-- 开发心得：[docs/开发心得.md](docs/开发心得.md)
-- 成员贡献：[docs/成员贡献说明.md](docs/成员贡献说明.md)
-- 演示视频脚本：[docs/演示视频脚本.md](docs/演示视频脚本.md)
-- Windows/Android 客户端实施方案：[docs/客户端开发实施方案.md](docs/客户端开发实施方案.md)
-- 客户端技术选型 ADR：[docs/adr/0001-客户端采用两端原生架构.md](docs/adr/0001-客户端采用两端原生架构.md)
-- 仓库内多 Agent 协作规范：[AGENTS.md](AGENTS.md)
-- 项目书与开发手册适用约束快照（供仓库内 Agent 使用）：[docs/依据/项目书与开发手册约束快照.md](docs/依据/项目书与开发手册约束快照.md)
-- v0.3-G0 测试沙盒验收记录：[docs/依据/v0.3-G0-测试沙盒验收记录.md](docs/依据/v0.3-G0-测试沙盒验收记录.md)
 
 ## 许可证
 

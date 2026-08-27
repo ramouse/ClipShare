@@ -28,6 +28,13 @@ token.conf
 # Claude 协作文档：仅本机开发用，不进入 GitHub 仓库（2026-08-14 用户要求）
 CLAUDE.md
 
+# Agent 协作规范仅保留在本机，不进入远端仓库
+AGENTS.md
+
+# 项目文档默认仅保留在本机；API 契约文档是唯一允许跟踪的 docs 文件
+/docs/*
+!/docs/API.md
+
 # 测试与工具缓存
 .pytest_cache/
 .mypy_cache/

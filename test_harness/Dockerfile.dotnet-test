@@ -3,22 +3,90 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0.400-noble-amd64@sha256:0e53453ccfc8ff2d51
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
     DOTNET_NOLOGO=1 \
-    NUGET_XMLDOC_MODE=skip
+    NUGET_XMLDOC_MODE=skip \
+    DOTNET_CLI_HOME=/work/dotnet-home \
+    NUGET_PACKAGES=/work/nuget-packages \
+    NUGET_HTTP_CACHE_PATH=/work/nuget-http-cache \
+    NUGET_SCRATCH=/work/nuget-scratch \
+    TMPDIR=/work/tmp \
+    CLIPSHARE_TEST_OUTPUT=/work/output \
+    DOTNET_CLI_USE_MSBUILD_SERVER=0 \
+    MSBUILDDISABLENODEREUSE=1
 
 RUN test "$(dotnet --version)" = "10.0.400"
 
-WORKDIR /app
-
-COPY clients/windows ./clients/windows
-COPY contracts ./contracts
+RUN mkdir -p \
+      /work/dotnet-home \
+      /work/nuget-packages \
+      /work/nuget-http-cache \
+      /work/nuget-scratch \
+      /work/tmp \
+      /work/current \
+      /work/output \
+    && chown -R 1654:1654 /work
 
 WORKDIR /app/clients/windows
 
+COPY clients/windows/Directory.Build.props ./Directory.Build.props
+COPY clients/windows/Directory.Packages.props ./Directory.Packages.props
+COPY clients/windows/global.json ./global.json
+COPY clients/windows/NuGet.offline.config ./NuGet.offline.config
+COPY clients/windows/src/ClipShare.Windows.Application/ClipShare.Windows.Application.csproj ./src/ClipShare.Windows.Application/
+COPY clients/windows/src/ClipShare.Windows.Infrastructure/ClipShare.Windows.Infrastructure.csproj ./src/ClipShare.Windows.Infrastructure/
+COPY clients/windows/src/ClipShare.Windows.Platform/ClipShare.Windows.Platform.csproj ./src/ClipShare.Windows.Platform/
+COPY clients/windows/tests/ClipShare.Windows.Crypto.ContractTests/ClipShare.Windows.Crypto.ContractTests.csproj ./tests/ClipShare.Windows.Crypto.ContractTests/
+COPY clients/windows/tests/ClipShare.Windows.Crypto.ContractTests/packages.lock.json ./tests/ClipShare.Windows.Crypto.ContractTests/
+COPY clients/windows/tests/ClipShare.Windows.W1.Tests/ClipShare.Windows.W1.Tests.csproj ./tests/ClipShare.Windows.W1.Tests/
+COPY clients/windows/tests/ClipShare.Windows.W1.Tests/packages.lock.json ./tests/ClipShare.Windows.W1.Tests/
+
 RUN dotnet restore \
       tests/ClipShare.Windows.Crypto.ContractTests/ClipShare.Windows.Crypto.ContractTests.csproj \
+      --locked-mode --property:NuGetAudit=false \
+    && dotnet restore \
+      tests/ClipShare.Windows.W1.Tests/ClipShare.Windows.W1.Tests.csproj \
+      --locked-mode --property:NuGetAudit=false
+
+COPY clients/windows/src/ClipShare.Windows.App/ClipShare.Windows.App.csproj ./src/ClipShare.Windows.App/
+COPY clients/windows/src/ClipShare.Windows.App/packages.lock.json ./src/ClipShare.Windows.App/
+
+RUN dotnet restore \
+      src/ClipShare.Windows.App/ClipShare.Windows.App.csproj \
+      --locked-mode \
+      --property:EnableWindowsTargeting=true \
+      --property:NuGetAudit=false
+
+COPY clients/windows/src ./src
+COPY clients/windows/tests ./tests
+COPY contracts /app/contracts
+COPY app/static/icons /app/app/static/icons
+COPY test_harness/verify-cobertura.awk /app/verify-cobertura.awk
+
+RUN dotnet format analyzers \
+      tests/ClipShare.Windows.W1.Tests/ClipShare.Windows.W1.Tests.csproj \
+      --no-restore --verify-no-changes --severity info \
     && dotnet build \
       tests/ClipShare.Windows.Crypto.ContractTests/ClipShare.Windows.Crypto.ContractTests.csproj \
-      --configuration Release --no-restore --property:ContinuousIntegrationBuild=true
+      --configuration Release --no-restore --property:ContinuousIntegrationBuild=true \
+    && dotnet \
+      tests/ClipShare.Windows.Crypto.ContractTests/bin/Release/net10.0/ClipShare.Windows.Crypto.ContractTests.dll \
+      /app/contracts/crypto-vectors/enc1/positive-vectors.json \
+      /app/contracts/crypto-vectors/enc1/negative-vectors.json \
+    && dotnet test \
+      --project tests/ClipShare.Windows.W1.Tests/ClipShare.Windows.W1.Tests.csproj \
+      --configuration Release --no-restore --property:ContinuousIntegrationBuild=true \
+      --coverlet --coverlet-output-format cobertura \
+      --results-directory /work/output/build-test-results \
+      --minimum-expected-tests 1 --no-ansi --no-progress \
+    && dotnet \
+      tests/ClipShare.Windows.W1.Tests/bin/Release/net10.0/ClipShare.Windows.W1.Tests.dll \
+      -reporter quiet -noColor -noLogo -failSkips \
+      -result-trx /work/output/build-test-results/w1.trx \
+    && test -s /work/output/build-test-results/w1.trx \
+    && report="$(find /work/output/build-test-results -type f -name 'coverage.cobertura*.xml' -print -quit)" \
+    && test -n "$report" \
+    && awk -f /app/verify-cobertura.awk "$report" \
+    && rm -rf /work/nuget-scratch/* /work/nuget-http-cache/* /work/tmp/* \
+    && chown -R 1654:1654 /work
 
 ARG SANDBOX_RUN_ID
 RUN test -n "${SANDBOX_RUN_ID}"

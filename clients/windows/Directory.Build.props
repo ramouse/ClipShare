@@ -4,7 +4,15 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode Condition="'$(CI)' == 'true'">true</RestoreLockedMode>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     <Deterministic>true</Deterministic>
+    <BaseOutputPath Condition="'$(CLIPSHARE_MSBUILD_ROOT)' != ''">$(CLIPSHARE_MSBUILD_ROOT)/$(MSBuildProjectName)/bin/</BaseOutputPath>
+    <BaseIntermediateOutputPath Condition="'$(CLIPSHARE_MSBUILD_ROOT)' != ''">$(CLIPSHARE_MSBUILD_ROOT)/$(MSBuildProjectName)/obj/</BaseIntermediateOutputPath>
+    <TestResultsDirectory Condition="'$(CLIPSHARE_TEST_OUTPUT)' != ''">$(CLIPSHARE_TEST_OUTPUT)/test-results/</TestResultsDirectory>
+    <UseSharedCompilation Condition="'$(CLIPSHARE_MSBUILD_ROOT)' != ''">false</UseSharedCompilation>
   </PropertyGroup>
 </Project>

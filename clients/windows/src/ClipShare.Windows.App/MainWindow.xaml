@@ -1,0 +1,200 @@
+<Window
+    x:Class="ClipShare.Windows.App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="ClipShare">
+    <ScrollViewer>
+        <Grid MaxWidth="880" Padding="32" HorizontalAlignment="Center">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Spacing="8">
+                <TextBlock Text="ClipShare" FontSize="32" FontWeight="SemiBold" />
+                <TextBlock Text="匿名、显式发送与领取。领取和下载会按服务器授权消耗访问次数。" TextWrapping="Wrap" />
+                <InfoBar
+                    IsOpen="True"
+                    IsClosable="False"
+                    Severity="Warning"
+                    Title="消费型读取"
+                    Message="领取超时、取消或流中断时结果未知，客户端不会自动重试。" />
+                <TextBox
+                    x:Name="BaseUrlTextBox"
+                    Header="API 服务地址"
+                    PlaceholderText="Release: https://…；Debug: http://127.0.0.1:端口/" />
+                <Button
+                    x:Name="CancelOperationButton"
+                    Content="取消当前操作"
+                    IsEnabled="False"
+                    Click="CancelOperationButton_Click" />
+            </StackPanel>
+
+            <NavigationView
+                Grid.Row="1"
+                x:Name="WorkflowNavigationView"
+                Margin="0,24,0,0"
+                IsBackButtonVisible="Collapsed"
+                IsSettingsVisible="False"
+                PaneDisplayMode="Top"
+                SelectionChanged="WorkflowNavigationView_SelectionChanged">
+                <NavigationView.MenuItems>
+                    <NavigationViewItem x:Name="TextNavigationItem" Content="文本" Icon="Edit" Tag="text" />
+                    <NavigationViewItem x:Name="FileNavigationItem" Content="文件" Icon="Document" Tag="file" />
+                </NavigationView.MenuItems>
+            </NavigationView>
+
+            <Grid
+                Grid.Row="2"
+                x:Name="TextWorkflowGrid"
+                Margin="0,16,0,0"
+                ColumnSpacing="24"
+                AutomationProperties.Name="文本分享工作区">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Spacing="10">
+                    <TextBlock Text="发送文本" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <TextBox x:Name="ShareContentTextBox" Header="内容" AcceptsReturn="True" MinHeight="140" TextWrapping="Wrap" />
+                    <ComboBox x:Name="TextExpiryComboBox" Header="有效期" SelectedIndex="1">
+                        <ComboBoxItem Content="1 小时" Tag="1h" />
+                        <ComboBoxItem Content="24 小时" Tag="24h" />
+                        <ComboBoxItem Content="7 天" Tag="7d" />
+                        <ComboBoxItem Content="永久" Tag="forever" />
+                    </ComboBox>
+                    <ComboBox x:Name="TextViewsComboBox" Header="访问次数" SelectedIndex="0">
+                        <ComboBoxItem Content="不限" Tag="0" />
+                        <ComboBoxItem Content="1 次" Tag="1" />
+                        <ComboBoxItem Content="5 次" Tag="5" />
+                    </ComboBox>
+                    <Button x:Name="CreateTextButton" Content="显式发送" Click="CreateTextButton_Click" Style="{StaticResource AccentButtonStyle}" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="CreatedTextUrlTextBox" Header="分享链接" IsReadOnly="True" />
+                        <Button
+                            Grid.Column="1"
+                            x:Name="CopyTextUrlButton"
+                            Content="复制链接"
+                            IsEnabled="False"
+                            VerticalAlignment="Bottom"
+                            Click="CopyTextUrlButton_Click" />
+                    </Grid>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Spacing="10">
+                    <TextBlock Text="领取文本" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <TextBox x:Name="ReceiveTextLocatorTextBox" Header="短码或分享链接" />
+                    <Button x:Name="ReceiveTextButton" Content="领取一次" Click="ReceiveTextButton_Click" />
+                    <TextBox x:Name="ReceivedTextBox" Header="领取内容" AcceptsReturn="True" MinHeight="220" IsReadOnly="True" TextWrapping="Wrap" />
+                </StackPanel>
+            </Grid>
+
+            <Grid
+                Grid.Row="3"
+                x:Name="FileWorkflowGrid"
+                Margin="0,16,0,0"
+                ColumnSpacing="24"
+                Visibility="Collapsed"
+                AutomationProperties.Name="文件分享工作区">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Spacing="10">
+                    <TextBlock Text="上传文件" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox
+                            x:Name="UploadPathTextBox"
+                            Header="用户选择的文件"
+                            IsReadOnly="True"
+                            PlaceholderText="尚未选择文件" />
+                        <Button
+                            Grid.Column="1"
+                            x:Name="SelectUploadFileButton"
+                            Content="选择文件…"
+                            VerticalAlignment="Bottom"
+                            Click="SelectUploadFileButton_Click" />
+                    </Grid>
+                    <ComboBox x:Name="FileExpiryComboBox" Header="有效期" SelectedIndex="1">
+                        <ComboBoxItem Content="1 小时" Tag="1h" />
+                        <ComboBoxItem Content="24 小时" Tag="24h" />
+                        <ComboBoxItem Content="7 天" Tag="7d" />
+                        <ComboBoxItem Content="永久" Tag="forever" />
+                    </ComboBox>
+                    <ComboBox x:Name="FileViewsComboBox" Header="下载次数" SelectedIndex="0">
+                        <ComboBoxItem Content="不限" Tag="0" />
+                        <ComboBoxItem Content="1 次" Tag="1" />
+                        <ComboBoxItem Content="5 次" Tag="5" />
+                    </ComboBox>
+                    <Button x:Name="UploadFileButton" Content="显式上传" Click="UploadFileButton_Click" Style="{StaticResource AccentButtonStyle}" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="CreatedFileUrlTextBox" Header="文件分享链接" IsReadOnly="True" />
+                        <Button
+                            Grid.Column="1"
+                            x:Name="CopyFileUrlButton"
+                            Content="复制链接"
+                            IsEnabled="False"
+                            VerticalAlignment="Bottom"
+                            Click="CopyFileUrlButton_Click" />
+                    </Grid>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Spacing="10">
+                    <TextBlock Text="下载文件" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <TextBox x:Name="DownloadLocatorTextBox" Header="短码或分享链接" />
+                    <Button x:Name="ReadMetadataButton" Content="读取元数据（不消耗次数）" Click="ReadMetadataButton_Click" />
+                    <TextBlock x:Name="FileMetadataTextBlock" TextWrapping="Wrap" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox
+                            x:Name="DownloadPathTextBox"
+                            Header="用户选择的保存位置"
+                            IsReadOnly="True"
+                            PlaceholderText="尚未选择保存位置" />
+                        <Button
+                            Grid.Column="1"
+                            x:Name="SelectDownloadPathButton"
+                            Content="选择位置…"
+                            VerticalAlignment="Bottom"
+                            Click="SelectDownloadPathButton_Click" />
+                    </Grid>
+                    <Button x:Name="DownloadFileButton" Content="下载一次" Click="DownloadFileButton_Click" />
+                    <ProgressBar
+                        x:Name="DownloadProgressBar"
+                        IsIndeterminate="False"
+                        Minimum="0"
+                        Maximum="1"
+                        AutomationProperties.Name="文件下载进度" />
+                    <TextBlock
+                        x:Name="DownloadProgressTextBlock"
+                        TextWrapping="Wrap"
+                        AutomationProperties.LiveSetting="Polite" />
+                </StackPanel>
+            </Grid>
+
+            <InfoBar
+                Grid.Row="4"
+                x:Name="StatusInfoBar"
+                Margin="0,28,0,0"
+                IsOpen="False"
+                IsClosable="True"
+                AutomationProperties.LiveSetting="Assertive" />
+        </Grid>
+    </ScrollViewer>
+</Window>

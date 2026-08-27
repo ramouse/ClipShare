@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ClipShare.Windows.Application/ClipShare.Windows.Application.csproj" />
+    <Project Path="src/ClipShare.Windows.Infrastructure/ClipShare.Windows.Infrastructure.csproj" />
+    <Project Path="src/ClipShare.Windows.Platform/ClipShare.Windows.Platform.csproj" />
+    <Project Path="src/ClipShare.Windows.App/ClipShare.Windows.App.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ClipShare.Windows.Crypto.ContractTests/ClipShare.Windows.Crypto.ContractTests.csproj" />
+    <Project Path="tests/ClipShare.Windows.W1.Tests/ClipShare.Windows.W1.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>ClipShare.Windows.Platform</RootNamespace>
+    <AssemblyName>ClipShare.Windows.Platform</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../ClipShare.Windows.Application/ClipShare.Windows.Application.csproj" />
+  </ItemGroup>
+</Project>

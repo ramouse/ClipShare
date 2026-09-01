@@ -22,7 +22,9 @@ jobs:
         run: |
           foreach ($script in @(
             './scripts/test-sandbox.ps1',
-            './scripts/test-clients.ps1'
+            './scripts/test-clients.ps1',
+            './scripts/test-android-a1.ps1',
+            './scripts/test-android-a1-emulator.ps1'
           )) {
             $tokens = $null
             $errors = $null

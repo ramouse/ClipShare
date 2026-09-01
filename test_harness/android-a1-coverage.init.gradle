@@ -1,0 +1,68 @@
+import org.gradle.testing.jacoco.plugins.JacocoPluginExtension
+import org.gradle.testing.jacoco.tasks.JacocoCoverageVerification
+import org.gradle.testing.jacoco.tasks.JacocoReport
+
+def coveredProjectPaths = [
+    ':core:model',
+    ':core:network',
+    ':feature:receive',
+    ':feature:send',
+    ':feature:settings',
+]
+
+gradle.beforeProject { project ->
+    if (coveredProjectPaths.contains(project.path)) {
+        project.pluginManager.apply('jacoco')
+        project.plugins.withId('java') {
+            project.extensions.getByType(JacocoPluginExtension).toolVersion = '0.8.14'
+        }
+    }
+}
+
+gradle.projectsEvaluated {
+    def coveredProjects = coveredProjectPaths.collect { rootProject.project(it) }
+    def testTasks = coveredProjects.collect { it.tasks.named('test') }
+    def classTrees = coveredProjects.collect { project ->
+        project.fileTree("${project.layout.buildDirectory.get()}/classes/kotlin/main")
+    }
+    def sourceTrees = coveredProjects.collect { project ->
+        project.files("${project.projectDir}/src/main/kotlin")
+    }
+
+    rootProject.tasks.register('a1JvmCoverageReport', JacocoReport) {
+        group = 'verification'
+        description = 'Generates the aggregate A1 JVM coverage report.'
+        dependsOn(testTasks)
+        executionData(testTasks.collect { it.get() })
+        classDirectories.from(classTrees)
+        sourceDirectories.from(sourceTrees)
+        reports {
+            xml.required = true
+            html.required = true
+            csv.required = false
+        }
+    }
+
+    rootProject.tasks.register('a1JvmCoverageVerification', JacocoCoverageVerification) {
+        group = 'verification'
+        description = 'Enforces the frozen A1 core/shared coverage thresholds.'
+        dependsOn(testTasks)
+        executionData(testTasks.collect { it.get() })
+        classDirectories.from(classTrees)
+        sourceDirectories.from(sourceTrees)
+        violationRules {
+            rule {
+                limit {
+                    counter = 'LINE'
+                    value = 'COVEREDRATIO'
+                    minimum = 0.90
+                }
+                limit {
+                    counter = 'BRANCH'
+                    value = 'COVEREDRATIO'
+                    minimum = 0.85
+                }
+            }
+        }
+    }
+}

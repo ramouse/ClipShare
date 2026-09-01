@@ -1,0 +1,137 @@
+FROM clipshare-test-kotlin:local@sha256:040f2c2ddbd7a2d6ff85c1575a47086769c127bd7ca3b96b5caf12d5d84a45a9 AS android-sdk
+
+USER root
+
+ARG ANDROID_COMMAND_LINE_TOOLS_BUILD=15859902
+ARG ANDROID_COMMAND_LINE_TOOLS_SHA256=4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583
+ENV ANDROID_SDK_ROOT=/opt/android-sdk
+ENV ANDROID_HOME=/opt/android-sdk
+ENV GRADLE_USER_HOME=/opt/clipshare-a1-gradle-cache
+ENV PATH="/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/build-tools/36.0.0:${PATH}"
+
+RUN set -eu; \
+    archive=/tmp/android-command-line-tools.zip; \
+    curl --fail --location --retry 2 --output "${archive}" \
+        "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_COMMAND_LINE_TOOLS_BUILD}_latest.zip"; \
+    echo "${ANDROID_COMMAND_LINE_TOOLS_SHA256}  ${archive}" | sha256sum --check --strict; \
+    mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"; \
+    unzip -q "${archive}" -d "${ANDROID_SDK_ROOT}/cmdline-tools"; \
+    mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" \
+        "${ANDROID_SDK_ROOT}/cmdline-tools/latest"; \
+    rm -f "${archive}"
+
+RUN set -eu; \
+    yes | sdkmanager --licenses >/dev/null; \
+    sdkmanager --channel=0 \
+        "build-tools;36.0.0" \
+        "platforms;android-36"; \
+    test -f "${ANDROID_SDK_ROOT}/platforms/android-36/android.jar"; \
+    test -x "${ANDROID_SDK_ROOT}/build-tools/36.0.0/aapt2"; \
+    mkdir -p "${GRADLE_USER_HOME}"; \
+    chown -R gradle:gradle "${ANDROID_SDK_ROOT}" "${GRADLE_USER_HOME}"
+
+ARG ANDROID_PLATFORM_TOOLS_VERSION=37.0.1
+ARG ANDROID_PLATFORM_TOOLS_SHA1=477254aa5f903c15cf51001717bdf347fb6b53e0
+
+RUN set -eu; \
+    archive=/tmp/android-platform-tools.zip; \
+    curl --fail --location --retry 2 --output "${archive}" \
+        "https://dl.google.com/android/repository/platform-tools_r${ANDROID_PLATFORM_TOOLS_VERSION}-linux.zip"; \
+    echo "${ANDROID_PLATFORM_TOOLS_SHA1}  ${archive}" | sha1sum --check --strict; \
+    unzip -q "${archive}" -d "${ANDROID_SDK_ROOT}"; \
+    rm -f "${archive}"; \
+    test -x "${ANDROID_SDK_ROOT}/platform-tools/adb"; \
+    chown -R gradle:gradle "${ANDROID_SDK_ROOT}/platform-tools"
+
+FROM android-sdk AS bootstrap
+
+COPY --chown=gradle:gradle clients/android /app/clients/android
+COPY --chown=gradle:gradle contracts /app/contracts
+COPY --chown=gradle:gradle test_harness/android-a1-coverage.init.gradle \
+    /opt/clipshare/android-a1-coverage.init.gradle
+
+USER gradle:gradle
+WORKDIR /app/clients/android
+
+# This target is only for the explicitly approved, networked first resolution.
+# Generated locks and SHA-256 verification metadata must be copied back to the
+# repository before the offline fixed image below is built.
+RUN gradle -Dorg.gradle.jvmargs="-Xmx2048m -XX:MaxMetaspaceSize=768m" --no-daemon --max-workers=2 \
+        --write-locks \
+        --write-verification-metadata sha256 \
+        a1AndroidCheck \
+        :app:assembleDebugAndroidTest
+
+COPY --chown=gradle:gradle test_harness/android-a1-coverage-root.init.gradle \
+    /opt/clipshare/android-a1-coverage-root.init.gradle
+
+RUN gradle -Dorg.gradle.jvmargs="-Xmx2048m -XX:MaxMetaspaceSize=768m" --no-daemon --max-workers=2 \
+        --init-script /opt/clipshare/android-a1-coverage.init.gradle \
+        --init-script /opt/clipshare/android-a1-coverage-root.init.gradle \
+        --write-locks \
+        --write-verification-metadata sha256 \
+        a1JvmCoverageReport
+
+COPY --chown=gradle:gradle test_harness/android-a1-platform-coverage.init.gradle \
+    /opt/clipshare/android-a1-platform-coverage.init.gradle
+
+# Resolve and lock the Android instrumentation coverage agent/report graphs.
+# No device tests run in this networked bootstrap stage.
+RUN gradle --no-daemon --max-workers=2 \
+        --init-script /opt/clipshare/android-a1-platform-coverage.init.gradle \
+        --write-locks --write-verification-metadata sha256 \
+        :app:dependencies --configuration debugRuntimeClasspath
+RUN gradle --no-daemon --max-workers=2 \
+        --init-script /opt/clipshare/android-a1-platform-coverage.init.gradle \
+        --write-locks --write-verification-metadata sha256 \
+        :app:dependencies --configuration androidJacocoAnt
+RUN gradle --no-daemon --max-workers=2 \
+        --init-script /opt/clipshare/android-a1-platform-coverage.init.gradle \
+        --write-locks --write-verification-metadata sha256 \
+        :platform:android:dependencies --configuration debugRuntimeClasspath
+
+LABEL com.clipshare.test-platform="android-a1-bootstrap"
+
+FROM bootstrap AS fixed
+
+USER root
+COPY clients/android/gradle/verification-metadata.xml \
+    /app/clients/android/gradle/verification-metadata.xml
+COPY clients/android/app/gradle.lockfile /app/clients/android/app/gradle.lockfile
+COPY clients/android/core/model/gradle.lockfile /app/clients/android/core/model/gradle.lockfile
+COPY clients/android/core/network/gradle.lockfile /app/clients/android/core/network/gradle.lockfile
+COPY clients/android/feature/receive/gradle.lockfile /app/clients/android/feature/receive/gradle.lockfile
+COPY clients/android/feature/send/gradle.lockfile /app/clients/android/feature/send/gradle.lockfile
+COPY clients/android/feature/settings/gradle.lockfile /app/clients/android/feature/settings/gradle.lockfile
+COPY clients/android/platform/android/gradle.lockfile /app/clients/android/platform/android/gradle.lockfile
+RUN chown -R gradle:gradle /app/clients/android
+
+USER gradle:gradle
+RUN gradle --offline --no-daemon --max-workers=2 --dependency-verification strict \
+        --init-script /opt/clipshare/android-a1-platform-coverage.init.gradle \
+        :app:dependencies --configuration debugRuntimeClasspath
+RUN gradle --offline --no-daemon --max-workers=2 --dependency-verification strict \
+        --init-script /opt/clipshare/android-a1-platform-coverage.init.gradle \
+        :app:dependencies --configuration androidJacocoAnt
+RUN gradle --offline --no-daemon --max-workers=2 --dependency-verification strict \
+        --init-script /opt/clipshare/android-a1-platform-coverage.init.gradle \
+        :platform:android:dependencies --configuration debugRuntimeClasspath
+RUN gradle -Dorg.gradle.jvmargs="-Xmx2048m -XX:MaxMetaspaceSize=768m" \
+        --offline --no-daemon --max-workers=2 --dependency-verification strict \
+        a1AndroidCheck \
+        :app:assembleDebugAndroidTest
+
+RUN gradle -Dorg.gradle.jvmargs="-Xmx2048m -XX:MaxMetaspaceSize=768m" \
+        --offline --no-daemon --max-workers=2 --dependency-verification strict \
+        --init-script /opt/clipshare/android-a1-coverage.init.gradle \
+        --init-script /opt/clipshare/android-a1-coverage-root.init.gradle \
+        a1JvmCoverageReport \
+        a1JvmCoverageVerification
+
+ARG SANDBOX_RUN_ID
+RUN test -n "${SANDBOX_RUN_ID}"
+LABEL com.clipshare.sandbox.run-id="${SANDBOX_RUN_ID}"
+LABEL com.clipshare.test-container="true"
+LABEL com.clipshare.test-platform="android-a1"
+
+CMD ["gradle", "--offline", "--no-daemon", "--dependency-verification", "strict", "a1AndroidCheck"]

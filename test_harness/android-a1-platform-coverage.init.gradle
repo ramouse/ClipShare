@@ -1,0 +1,66 @@
+import org.gradle.testing.jacoco.plugins.JacocoPluginExtension
+import org.gradle.testing.jacoco.tasks.JacocoCoverageVerification
+import org.gradle.testing.jacoco.tasks.JacocoReport
+
+gradle.beforeProject { project ->
+    if (project == project.rootProject) {
+        project.pluginManager.apply('jacoco')
+        project.extensions.getByType(JacocoPluginExtension).toolVersion = '0.8.14'
+    }
+    if (project.path == ':app' || project.path == ':platform:android') {
+        ['com.android.application', 'com.android.library'].each { pluginId ->
+            project.plugins.withId(pluginId) {
+                project.android.buildTypes.debug.enableAndroidTestCoverage = true
+                project.android.testCoverage.jacocoVersion = '0.8.14'
+            }
+        }
+    }
+}
+
+gradle.projectsEvaluated {
+    def appProject = rootProject.project(':app')
+    def platformProject = rootProject.project(':platform:android')
+    def executionFiles = appProject.fileTree(appProject.layout.buildDirectory) {
+        include 'outputs/code_coverage/debugAndroidTest/connected/**/*.ec'
+    }
+    def platformClasses = platformProject.fileTree(platformProject.layout.buildDirectory) {
+        include 'intermediates/built_in_kotlinc/debug/compileDebugKotlin/classes/**/*.class'
+    }
+    def platformSources = platformProject.files("${platformProject.projectDir}/src/main/kotlin")
+
+    rootProject.tasks.register('a1PlatformCoverageReport', JacocoReport) {
+        group = 'verification'
+        description = 'Generates the A1 Android platform-adapter instrumentation coverage report.'
+        executionData.from(executionFiles)
+        classDirectories.from(platformClasses)
+        sourceDirectories.from(platformSources)
+        reports {
+            xml.required = true
+            xml.outputLocation = rootProject.layout.buildDirectory.file(
+                'reports/jacoco/a1PlatformCoverage/a1PlatformCoverage.xml',
+            )
+            html.required = true
+            html.outputLocation = rootProject.layout.buildDirectory.dir(
+                'reports/jacoco/a1PlatformCoverage/html',
+            )
+            csv.required = false
+        }
+    }
+
+    rootProject.tasks.register('a1PlatformCoverageVerification', JacocoCoverageVerification) {
+        group = 'verification'
+        description = 'Enforces the frozen A1 Android platform-adapter coverage threshold.'
+        executionData.from(executionFiles)
+        classDirectories.from(platformClasses)
+        sourceDirectories.from(platformSources)
+        violationRules {
+            rule {
+                limit {
+                    counter = 'LINE'
+                    value = 'COVEREDRATIO'
+                    minimum = 0.80
+                }
+            }
+        }
+    }
+}

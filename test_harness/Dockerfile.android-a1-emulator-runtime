@@ -1,0 +1,98 @@
+ARG A1_EMULATOR_MATRIX_IMAGE=clipshare-test-android-a1:emulator-matrix-ready
+ARG A1_EMULATOR_RUNTIME_LIBS_IMAGE=clipshare-test-android-a1:emulator-runtime-libs-ready
+ARG A1_FIXED_IMAGE=clipshare-test-android-a1:fixed-candidate
+
+FROM ${A1_FIXED_IMAGE} AS fixed-a1-cache
+
+FROM ${A1_EMULATOR_MATRIX_IMAGE} AS package-resolution
+
+USER root
+
+# This diagnostic target resolves the current Ubuntu 24.04 package version
+# without adding capabilities to the eventual test container.
+RUN set -eu; \
+    sources=/etc/apt/sources.list.d/ubuntu.sources; \
+    cp "${sources}" /tmp/ubuntu.sources; \
+    sed -i 's/^Components:.*/Components: main/' "${sources}"; \
+    apt-get update; \
+    { \
+        apt-cache policy libx11-6; \
+        apt-get install --simulate --no-install-recommends libx11-6; \
+    } > /opt/clipshare-libx11-resolution.txt; \
+    mv /tmp/ubuntu.sources "${sources}"; \
+    rm -rf /var/lib/apt/lists/*
+
+ENTRYPOINT []
+CMD ["cat", "/opt/clipshare-libx11-resolution.txt"]
+
+FROM ${A1_EMULATOR_MATRIX_IMAGE} AS runtime-libs
+
+USER root
+
+ARG LIBX11_VERSION=2:1.8.7-1build1
+ARG LIBXAU_VERSION=1:1.0.9-1build6
+ARG LIBXCB_VERSION=1.15-1ubuntu2
+ARG LIBXDMCP_VERSION=1:1.1.3-0ubuntu6
+
+RUN set -eu; \
+    test -n "${LIBX11_VERSION}"; \
+    test -n "${LIBXAU_VERSION}"; \
+    test -n "${LIBXCB_VERSION}"; \
+    test -n "${LIBXDMCP_VERSION}"; \
+    sources=/etc/apt/sources.list.d/ubuntu.sources; \
+    cp "${sources}" /tmp/ubuntu.sources; \
+    sed -i 's/^Components:.*/Components: main/' "${sources}"; \
+    apt-get update; \
+    apt-get install --yes --no-install-recommends \
+        "libx11-6=${LIBX11_VERSION}" \
+        "libx11-data=${LIBX11_VERSION}" \
+        "libxau6=${LIBXAU_VERSION}" \
+        "libxcb1=${LIBXCB_VERSION}" \
+        "libxdmcp6=${LIBXDMCP_VERSION}"; \
+    mv /tmp/ubuntu.sources "${sources}"; \
+    rm -rf /var/lib/apt/lists/*; \
+    test -e /usr/lib/x86_64-linux-gnu/libX11.so.6
+
+RUN set -eu; \
+    emulator_root=/opt/android-sdk/emulator; \
+    emulator_libs="${emulator_root}/lib64:${emulator_root}/lib64/qt/lib:${emulator_root}/lib64/gles_swiftshader"; \
+    ! LD_LIBRARY_PATH="${emulator_libs}" \
+        ldd "${emulator_root}/emulator" | grep -F "not found"; \
+    ! LD_LIBRARY_PATH="${emulator_libs}" \
+        ldd "${emulator_root}/qemu/linux-x86_64/qemu-system-x86_64-headless" | \
+        grep -F "not found"
+
+LABEL com.clipshare.test-container="true"
+LABEL com.clipshare.test-platform="android-a1-emulator-runtime-libs"
+LABEL org.clipshare.a1.emulator-runtime="headless-libx11"
+
+FROM ${A1_EMULATOR_RUNTIME_LIBS_IMAGE} AS runtime
+
+USER root
+
+# Merge the already verified JaCoCo/Gradle artifacts from the fixed A1 image.
+# The runtime rebuild itself remains network-none and does not resolve or
+# download new dependencies.
+COPY --from=fixed-a1-cache --chown=gradle:gradle \
+    /opt/clipshare-a1-gradle-cache/ /opt/clipshare-a1-gradle-cache/
+
+# The matrix bootstrap used minimal package.xml files so sdkmanager could audit
+# the manually extracted archives. avdmanager rejects those generated records,
+# while the official system-image source.properties files are sufficient for
+# its legacy local-package discovery.
+RUN find /opt/android-sdk/system-images \
+        -mindepth 4 -maxdepth 4 -type f -name package.xml -delete; \
+    test "$(find /opt/android-sdk/system-images \
+        -mindepth 4 -maxdepth 4 -type f -name source.properties | wc -l)" -eq 6
+
+USER gradle:gradle
+WORKDIR /app/clients/android
+
+LABEL com.clipshare.test-container="true"
+LABEL com.clipshare.test-platform="android-a1-emulator-runtime"
+LABEL org.clipshare.a1.emulator-runtime="headless-libx11"
+
+# The downloaded SDK image was committed from a temporary tail container.
+# Restore a neutral entrypoint and the fixed offline A1 gate as the default.
+ENTRYPOINT []
+CMD ["gradle", "--offline", "--no-daemon", "--dependency-verification", "strict", "a1AndroidCheck"]

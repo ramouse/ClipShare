@@ -83,6 +83,7 @@ function Write-SourceHashManifest {
 
     $sourceRoots = @(
         (Join-Path $repoRoot "contracts"),
+        (Join-Path $repoRoot "clients/android/crypto-contract"),
         (Join-Path $repoRoot "clients/windows")
     )
     $lines = foreach ($sourceRoot in $sourceRoots) {
@@ -192,14 +193,21 @@ function Initialize-FixedTestContainer {
 
     $expectedImageId = Get-DockerImageId -Image $Specification.Image
     $configuration = @(& docker container inspect --format `
-        '{{.Image}}|{{.HostConfig.NetworkMode}}|{{.HostConfig.RestartPolicy.Name}}|{{index .Config.Labels "com.clipshare.test-container"}}|{{json .HostConfig.CapDrop}}|{{json .HostConfig.SecurityOpt}}|{{json .Mounts}}' `
+        '{{.Image}}|{{.HostConfig.NetworkMode}}|{{.HostConfig.RestartPolicy.Name}}|{{index .Config.Labels "com.clipshare.test-container"}}|{{json .HostConfig.CapDrop}}|{{json .HostConfig.SecurityOpt}}|{{json .HostConfig.Binds}}' `
         $Specification.Name)
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to inspect $($Specification.Name)."
     }
-    $expectedConfiguration = $expectedImageId + '|none|no|true|["ALL"]|["no-new-privileges"]|[]'
+    $expectedConfiguration = $expectedImageId + '|none|no|true|["ALL"]|["no-new-privileges"]|null'
     if (($configuration -join "").Trim() -ne $expectedConfiguration) {
         throw "$($Specification.Name) is not the expected offline fixed test container; use -Rebuild."
+    }
+    $containerInspection = @(& docker container inspect $Specification.Name) | ConvertFrom-Json
+    $unexpectedMounts = @($containerInspection[0].Mounts | Where-Object {
+        $_.Type -ne "volume" -or $_.Destination -ne "/home/gradle/.gradle"
+    })
+    if ($unexpectedMounts.Count -ne 0) {
+        throw "$($Specification.Name) has an unexpected host-visible mount."
     }
 
     return $expectedImageId

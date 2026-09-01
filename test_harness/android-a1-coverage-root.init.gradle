@@ -1,0 +1,34 @@
+import org.gradle.testing.jacoco.plugins.JacocoPluginExtension
+
+gradle.beforeProject { project ->
+    if (project == project.rootProject) {
+        project.pluginManager.apply('jacoco')
+        project.extensions.getByType(JacocoPluginExtension).toolVersion = '0.8.14'
+    }
+}
+
+gradle.projectsEvaluated {
+    def executionFiles = [
+        ':core:model',
+        ':core:network',
+        ':feature:receive',
+        ':feature:send',
+        ':feature:settings',
+    ].collect { projectPath ->
+        rootProject.project(projectPath).layout.buildDirectory.file('jacoco/test.exec')
+    }
+    rootProject.tasks.named('a1JvmCoverageReport') {
+        executionData.setFrom(executionFiles)
+        reports {
+            xml.outputLocation = rootProject.layout.buildDirectory.file(
+                'reports/jacoco/a1JvmCoverage/a1JvmCoverage.xml',
+            )
+            html.outputLocation = rootProject.layout.buildDirectory.dir(
+                'reports/jacoco/a1JvmCoverage/html',
+            )
+        }
+    }
+    rootProject.tasks.named('a1JvmCoverageVerification') {
+        executionData.setFrom(executionFiles)
+    }
+}

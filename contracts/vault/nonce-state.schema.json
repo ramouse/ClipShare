@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clipshare.local/contracts/vault/nonce-state.schema.json",
+  "title": "ClipShare Vault v1 persisted nonce scope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "vaultId", "keyEpoch", "purpose", "originDeviceId",
+    "prefix", "lastCounter"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "vaultId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "keyEpoch": { "$ref": "common.schema.json#/$defs/positiveInt64" },
+    "purpose": {
+      "enum": ["folder-metadata", "item-metadata", "item-payload", "file-key-wrap", "file-manifest", "event-body"]
+    },
+    "originDeviceId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "prefix": { "type": "string", "pattern": "^[A-Za-z0-9_-]{6}$" },
+    "lastCounter": { "$ref": "common.schema.json#/$defs/nonNegativeInt64" }
+  }
+}

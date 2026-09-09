@@ -5,6 +5,8 @@ plugins {
     alias(libs.plugins.kotlin.compose) apply false
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.kotlin.serialization) apply false
+    alias(libs.plugins.ksp) apply false
+    alias(libs.plugins.room) apply false
 }
 
 allprojects {
@@ -40,6 +42,31 @@ tasks.register("a1AndroidCheck") {
         ":app:detekt",
         ":app:lintDebug",
         ":app:testDebugUnitTest",
+        ":platform:android:detekt",
+        ":platform:android:lintDebug",
+        ":platform:android:testDebugUnitTest",
+    )
+}
+
+tasks.register("c2JvmCheck") {
+    group = "verification"
+    description = "Runs the host-independent v0.3-C2 Vault unit and static-analysis gates."
+    dependsOn(
+        ":core:vault:test",
+        ":core:crypto:test",
+        ":core:sync:test",
+        ":core:vault:detekt",
+        ":core:crypto:detekt",
+        ":core:sync:detekt",
+    )
+}
+
+tasks.register("c2AndroidCheck") {
+    group = "verification"
+    description = "Builds and checks the Android v0.3-C2 Room/Keystore adapter test APK."
+    dependsOn(
+        "c2JvmCheck",
+        ":platform:android:assembleDebugAndroidTest",
         ":platform:android:detekt",
         ":platform:android:lintDebug",
         ":platform:android:testDebugUnitTest",

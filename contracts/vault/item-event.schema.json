@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clipshare.local/contracts/vault/item-event.schema.json",
+  "title": "ClipShare Vault v1 item event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "entityKind", "eventId", "vaultId", "sourceDeviceId",
+    "sourceSequence", "logicalTime", "entityId", "operation", "baseVersionId",
+    "newVersionId", "keyEpoch", "encryptedBody"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "entityKind": { "const": "ITEM" },
+    "eventId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "vaultId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "sourceDeviceId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "sourceSequence": { "$ref": "common.schema.json#/$defs/positiveInt64" },
+    "logicalTime": { "$ref": "common.schema.json#/$defs/positiveInt64" },
+    "entityId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "operation": { "enum": ["CREATE", "UPDATE", "MOVE", "TRASH", "RESTORE", "PURGE"] },
+    "baseVersionId": {
+      "oneOf": [
+        { "$ref": "common.schema.json#/$defs/uuid" },
+        { "type": "null" }
+      ]
+    },
+    "newVersionId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "keyEpoch": { "$ref": "common.schema.json#/$defs/positiveInt64" },
+    "encryptedBody": { "$ref": "vault-envelope.schema.json" }
+  }
+}

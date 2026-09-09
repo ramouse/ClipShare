@@ -5,6 +5,7 @@
   "description": "ClipShare 前端冒烟测试（jsdom）：M7 将宿主机手动执行的 tests/e2e/*.js 接入 CI",
   "scripts": {
     "guard": "node tests/e2e/sandbox_guard.test.js",
+    "vault-contract": "node tests/e2e/vault_contract_vectors.test.js",
     "e2e": "npm run guard && node tests/e2e/crypto_vectors.test.js && node tests/e2e/create_idempotency.test.js && node tests/e2e/frontend_smoke.js && node tests/e2e/encryption.test.js && node tests/e2e/pwa.test.js"
   },
   "devDependencies": {

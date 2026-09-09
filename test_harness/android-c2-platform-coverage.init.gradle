@@ -1,0 +1,59 @@
+import org.gradle.testing.jacoco.plugins.JacocoPluginExtension
+import org.gradle.testing.jacoco.tasks.JacocoCoverageVerification
+import org.gradle.testing.jacoco.tasks.JacocoReport
+
+gradle.beforeProject { project ->
+    if (project == project.rootProject) {
+        project.pluginManager.apply('jacoco')
+        project.extensions.getByType(JacocoPluginExtension).toolVersion = '0.8.14'
+    }
+}
+
+gradle.projectsEvaluated {
+    def platformProject = rootProject.project(':platform:android')
+    def executionFiles = platformProject.fileTree(platformProject.layout.buildDirectory) {
+        include 'outputs/code_coverage/debugAndroidTest/connected/**/*.ec'
+    }
+    def platformClasses = platformProject.fileTree(platformProject.layout.buildDirectory) {
+        include 'intermediates/built_in_kotlinc/debug/compileDebugKotlin/classes/com/clipshare/platform/android/vault/**/*.class'
+        exclude '**/*_Impl*'
+        exclude '**/*_Factory*'
+    }
+    def platformSources = platformProject.files("${platformProject.projectDir}/src/main/kotlin")
+
+    rootProject.tasks.register('c2PlatformCoverageReport', JacocoReport) {
+        group = 'verification'
+        description = 'Generates the C2 Room, Keystore, and encrypted-blob coverage report.'
+        executionData.from(executionFiles)
+        classDirectories.from(platformClasses)
+        sourceDirectories.from(platformSources)
+        reports {
+            xml.required = true
+            xml.outputLocation = rootProject.layout.buildDirectory.file(
+                'reports/jacoco/c2PlatformCoverage/c2PlatformCoverage.xml',
+            )
+            html.required = true
+            html.outputLocation = rootProject.layout.buildDirectory.dir(
+                'reports/jacoco/c2PlatformCoverage/html',
+            )
+            csv.required = false
+        }
+    }
+
+    rootProject.tasks.register('c2PlatformCoverageVerification', JacocoCoverageVerification) {
+        group = 'verification'
+        description = 'Enforces the C2 Android Vault platform-adapter line threshold.'
+        executionData.from(executionFiles)
+        classDirectories.from(platformClasses)
+        sourceDirectories.from(platformSources)
+        violationRules {
+            rule {
+                limit {
+                    counter = 'LINE'
+                    value = 'COVEREDRATIO'
+                    minimum = 0.80
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clipshare.local/contracts/vault/platform-key-wrapper.schema.json",
+  "title": "ClipShare Vault v1 local platform wrapper",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "platform", "algorithm", "vaultId", "initializationId",
+    "keyEpoch", "state", "keyReference", "nonce", "protectedSecret"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "platform": { "enum": ["WINDOWS", "ANDROID"] },
+    "algorithm": { "enum": ["DPAPI-CURRENT-USER", "ANDROID-KEYSTORE-A256GCM"] },
+    "vaultId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "initializationId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "keyEpoch": { "$ref": "common.schema.json#/$defs/positiveInt64" },
+    "state": { "$ref": "common.schema.json#/$defs/initializationState" },
+    "keyReference": { "type": ["string", "null"], "maxLength": 160 },
+    "nonce": {
+      "oneOf": [
+        { "type": "string", "pattern": "^[A-Za-z0-9_-]{16}$" },
+        { "type": "null" }
+      ]
+    },
+    "protectedSecret": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "platform": { "const": "WINDOWS" } } },
+      "then": {
+        "properties": {
+          "algorithm": { "const": "DPAPI-CURRENT-USER" },
+          "keyReference": { "type": "null" },
+          "nonce": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "platform": { "const": "ANDROID" } } },
+      "then": {
+        "properties": {
+          "algorithm": { "const": "ANDROID-KEYSTORE-A256GCM" },
+          "keyReference": { "type": "string", "minLength": 1 },
+          "nonce": { "type": "string", "pattern": "^[A-Za-z0-9_-]{16}$" }
+        }
+      }
+    }
+  ]
+}

@@ -12,7 +12,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$EnvironmentAttestation,
 
-    [switch]$VerifyPackageLifecycle
+    [switch]$VerifyPackageLifecycle,
+
+    [switch]$VerifyC2Vault
 )
 
 $ErrorActionPreference = "Stop"
@@ -392,6 +394,10 @@ if ($env:CLIPSHARE_EPHEMERAL_WINDOWS -ne "1") {
     throw "Set CLIPSHARE_EPHEMERAL_WINDOWS=1 only inside an approved disposable Windows Sandbox or temporary VM."
 }
 
+if ($VerifyPackageLifecycle -and $VerifyC2Vault) {
+    throw "C2 Vault verification and the W1 package lifecycle gate must run as separate scoped gates."
+}
+
 $source = Get-ResolvedDirectory -Path $SourceRoot
 $evidence = Get-ResolvedDirectory -Path $EvidenceRoot
 $nugetPackages = Get-ResolvedDirectory -Path $OfflineNuGetPackages
@@ -417,6 +423,15 @@ if ($attestation.schema -ne "clipshare.windows-ephemeral/v1" -or
 
 if ([bool]$attestation.lifecycleRequested -ne [bool]$VerifyPackageLifecycle) {
     throw "Environment attestation lifecycle intent does not match the native gate invocation."
+}
+$attestedC2Vault = if ($attestation.PSObject.Properties.Name -contains "c2VaultRequested") {
+    [bool]$attestation.c2VaultRequested
+}
+else {
+    $false
+}
+if ($attestedC2Vault -ne [bool]$VerifyC2Vault) {
+    throw "Environment attestation C2 Vault intent does not match the native gate invocation."
 }
 
 if ($attestation.environment -eq "WindowsSandbox") {
@@ -482,7 +497,9 @@ if ($LASTEXITCODE -ne 0 -or $sdkVersion -ne "10.0.400") {
     throw "W1 native gate requires exactly .NET SDK 10.0.400; found '$sdkVersion'."
 }
 
-$runId = "w1-native-{0}-{1}" -f `
+$runPrefix = if ($VerifyC2Vault) { "c2-native" } else { "w1-native" }
+$runId = "{0}-{1}-{2}" -f `
+    $runPrefix, `
     [DateTimeOffset]::UtcNow.ToString("yyyyMMddTHHmmssfffZ"), `
     ([Guid]::NewGuid().ToString("N").Substring(0, 8))
 $temporaryBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
@@ -520,6 +537,7 @@ $result = [ordered]@{
     environment = $attestation.environment
     wsbConfigSha256 = $resultWsbSha256
     lifecycleRequested = [bool]$VerifyPackageLifecycle
+    c2VaultRequested = [bool]$VerifyC2Vault
     status = "FAILED"
 }
 
@@ -555,35 +573,90 @@ try {
     $windowsRoot = Join-Path $sourceCopy "clients/windows"
     $solution = Join-Path $windowsRoot "ClipShare.Windows.slnx"
     $appProject = Join-Path $windowsRoot "src/ClipShare.Windows.App/ClipShare.Windows.App.csproj"
+    $c2Project = Join-Path $windowsRoot "tests/ClipShare.Windows.C2.Tests/ClipShare.Windows.C2.Tests.csproj"
     $offlineConfig = Join-Path $windowsRoot "NuGet.offline.config"
 
     Push-Location $windowsRoot
     try {
-        Invoke-Checked -FilePath "dotnet" -Arguments @(
-            "restore", $solution,
-            "--configfile", $offlineConfig,
-            "--locked-mode",
-            "--packages", $nugetPackages,
-            "--property:ContinuousIntegrationBuild=true"
-        )
-        Invoke-Checked -FilePath "dotnet" -Arguments @(
-            "build", $solution,
-            "--configuration", "Release",
-            "--no-restore",
-            "--property:ContinuousIntegrationBuild=true"
-        )
+        if ($VerifyC2Vault) {
+            $c2Evidence = Join-Path $evidence "$runId/c2-vault"
+            $c2TestOutput = Join-Path $buildArtifacts "c2-test-output"
+            [IO.Directory]::CreateDirectory($c2Evidence) | Out-Null
+            [IO.Directory]::CreateDirectory($c2TestOutput) | Out-Null
+            $env:CLIPSHARE_TEST_OUTPUT = $c2TestOutput
 
-        $packageArguments = @(
-            "build", $appProject,
-            "--configuration", "Release",
-            "--no-restore",
-            "--property:ContinuousIntegrationBuild=true",
-            "--property:GenerateAppxPackageOnBuild=true",
-            "--property:AppxSymbolPackageEnabled=false",
-            "--property:AppxPackageDir=$packageOutput\"
-        )
+            Invoke-Checked -FilePath "dotnet" -Arguments @(
+                "restore", $c2Project,
+                "--configfile", $offlineConfig,
+                "--locked-mode",
+                "--packages", $nugetPackages,
+                "--property:ContinuousIntegrationBuild=true"
+            )
+            Invoke-Checked -FilePath "dotnet" -Arguments @(
+                "build", $c2Project,
+                "--configuration", "Release",
+                "--no-restore",
+                "--property:ContinuousIntegrationBuild=true"
+            )
+            Invoke-Checked -FilePath "dotnet" -Arguments @(
+                "test",
+                "--project", $c2Project,
+                "--configuration", "Release",
+                "--no-restore",
+                "--property:ContinuousIntegrationBuild=true",
+                "--coverlet",
+                "--coverlet-output-format", "cobertura",
+                "--results-directory", $c2Evidence,
+                "--minimum-expected-tests", "47",
+                "--no-ansi",
+                "--no-progress"
+            )
 
-        if ($VerifyPackageLifecycle) {
+            $coverageReports = @(Get-ChildItem -LiteralPath $c2Evidence -File -Filter "coverage.cobertura.*.xml")
+            if ($coverageReports.Count -ne 1) {
+                throw "C2 native test run must produce exactly one Cobertura report; found $($coverageReports.Count)."
+            }
+            $result.c2Vault = "DPAPI-CurrentUser-SQLite-blob-session-pass"
+            $result.c2MinimumExpectedTests = 47
+            $result.c2CoverageReport = $coverageReports[0].Name
+            $result.c2CoverageSha256 = (
+                Get-FileHash -LiteralPath $coverageReports[0].FullName -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            $coverageGate = @(
+                & (Join-Path $sourceCopy "scripts/verify-windows-c2-coverage.ps1") `
+                    -CoveragePath $coverageReports[0].FullName `
+                    -RequireDpapi
+            )
+            $coverageGatePath = Join-Path $c2Evidence "coverage-gate.txt"
+            $coverageGate | Set-Content -LiteralPath $coverageGatePath -Encoding UTF8
+            $result.c2CoverageGate = @($coverageGate)
+        }
+        else {
+            Invoke-Checked -FilePath "dotnet" -Arguments @(
+                "restore", $solution,
+                "--configfile", $offlineConfig,
+                "--locked-mode",
+                "--packages", $nugetPackages,
+                "--property:ContinuousIntegrationBuild=true"
+            )
+            Invoke-Checked -FilePath "dotnet" -Arguments @(
+                "build", $solution,
+                "--configuration", "Release",
+                "--no-restore",
+                "--property:ContinuousIntegrationBuild=true"
+            )
+
+            $packageArguments = @(
+                "build", $appProject,
+                "--configuration", "Release",
+                "--no-restore",
+                "--property:ContinuousIntegrationBuild=true",
+                "--property:GenerateAppxPackageOnBuild=true",
+                "--property:AppxSymbolPackageEnabled=false",
+                "--property:AppxPackageDir=$packageOutput\"
+            )
+
+            if ($VerifyPackageLifecycle) {
             $certificate = New-SelfSignedCertificate `
                 -Type Custom `
                 -Subject "CN=ClipShare-Development-Only" `
@@ -799,7 +872,8 @@ try {
                 throw "Windows App Runtime package inventory changed after lifecycle cleanup."
             }
 
-            $result.lifecycle = "install-uninstall-clean"
+                $result.lifecycle = "install-uninstall-clean"
+            }
         }
     }
     finally {

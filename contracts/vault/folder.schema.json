@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clipshare.local/contracts/vault/folder.schema.json",
+  "title": "ClipShare Vault v1 encrypted folder record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "vaultId", "folderId", "parentId", "currentVersionId",
+    "keyEpoch", "tombstone", "encryptedMetadata"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "vaultId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "folderId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "parentId": {
+      "oneOf": [
+        { "$ref": "common.schema.json#/$defs/uuid" },
+        { "type": "null" }
+      ]
+    },
+    "currentVersionId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "keyEpoch": { "$ref": "common.schema.json#/$defs/positiveInt64" },
+    "tombstone": { "type": "boolean" },
+    "encryptedMetadata": { "$ref": "vault-envelope.schema.json" }
+  }
+}

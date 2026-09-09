@@ -1,0 +1,140 @@
+{
+  "suite": "clipshare-vault-v1-negative",
+  "suiteVersion": 1,
+  "testOnly": true,
+  "contractCases": [
+    {
+      "id": "schema-version-downgrade",
+      "mutation": "set-schema-version-zero",
+      "expectedError": "unsupported_version"
+    },
+    {
+      "id": "unknown-property",
+      "mutation": "append-unknown-json-property",
+      "expectedError": "invalid_contract"
+    },
+    {
+      "id": "uppercase-uuid",
+      "mutation": "uppercase-vault-id",
+      "expectedError": "invalid_id"
+    },
+    {
+      "id": "base64url-padding",
+      "mutation": "append-equals-padding",
+      "expectedError": "invalid_encoding"
+    }
+  ],
+  "authenticationCases": [
+    {
+      "id": "wrong-epoch-secret",
+      "sourceVectorId": "epoch1-item-payload-4k",
+      "mutation": "use-epoch2-derived-key",
+      "expectedError": "authentication_failed"
+    },
+    {
+      "id": "swapped-entity-id",
+      "sourceVectorId": "epoch1-item-payload-4k",
+      "mutation": "replace-aad-entity-id",
+      "expectedError": "authentication_failed"
+    },
+    {
+      "id": "swapped-purpose",
+      "sourceVectorId": "epoch1-item-payload-4k",
+      "mutation": "replace-aad-purpose",
+      "expectedError": "authentication_failed"
+    },
+    {
+      "id": "tampered-tag",
+      "sourceVectorId": "file-generation-chunk-3",
+      "mutation": "flip-last-cipher-and-tag-bit",
+      "expectedError": "authentication_failed"
+    }
+  ],
+  "nonceCases": [
+    {
+      "id": "record-counter-zero",
+      "operation": "allocate-record-counter-zero",
+      "expectedError": "invalid_nonce"
+    },
+    {
+      "id": "counter-exhausted",
+      "operation": "allocate-after-9223372036854775807",
+      "expectedError": "nonce_exhausted"
+    },
+    {
+      "id": "replay-consumed-counter-without-envelope",
+      "operation": "replay-after-counter-commit-before-encryption",
+      "expectedResult": "allocate-new-counter"
+    },
+    {
+      "id": "duplicate-scope-counter",
+      "operation": "insert-duplicate-vault-epoch-purpose-device-counter",
+      "expectedError": "invalid_nonce"
+    },
+    {
+      "id": "rewrite-file-chunk-generation",
+      "operation": "rewrite-same-generation-and-chunk-index",
+      "expectedError": "invalid_nonce"
+    },
+    {
+      "id": "production-fixed-nonce-source",
+      "operation": "construct-production-graph-with-test-nonce-source",
+      "expectedError": "invalid_contract"
+    }
+  ],
+  "initializationCases": [
+    {
+      "id": "both-absent",
+      "wrapper": "ABSENT",
+      "database": "ABSENT",
+      "expectedResult": "CREATE_NEW_EPOCH_SECRET"
+    },
+    {
+      "id": "staged-wrapper-only",
+      "wrapper": "STAGED",
+      "database": "ABSENT",
+      "expectedResult": "RESUME_WITH_EXISTING_SECRET"
+    },
+    {
+      "id": "ready-wrapper-only",
+      "wrapper": "READY",
+      "database": "ABSENT",
+      "expectedError": "initialization_incomplete"
+    },
+    {
+      "id": "database-only",
+      "wrapper": "ABSENT",
+      "database": "READY",
+      "expectedError": "key_unavailable"
+    },
+    {
+      "id": "database-ready-wrapper-staged",
+      "wrapper": "STAGED_MATCHING",
+      "database": "READY",
+      "expectedResult": "PROMOTE_EXISTING_WRAPPER"
+    },
+    {
+      "id": "wrapper-digest-mismatch",
+      "wrapper": "READY_MISMATCH",
+      "database": "READY",
+      "expectedError": "wrapper_mismatch"
+    }
+  ],
+  "epochCases": [
+    {
+      "id": "derive-future-from-old-secret",
+      "operation": "derive-epoch2-from-epoch1-and-public-number",
+      "expectedError": "invalid_contract"
+    },
+    {
+      "id": "wrap-new-epoch-for-revoked-device",
+      "operation": "create-wrapper-for-revoked-device",
+      "expectedError": "invalid_contract"
+    },
+    {
+      "id": "remove-referenced-old-epoch",
+      "operation": "delete-old-secret-with-nonzero-reference-count",
+      "expectedError": "conflict"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clipshare.local/contracts/vault/file-manifest.schema.json",
+  "title": "ClipShare Vault v1 encrypted file manifest record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "vaultId", "fileId", "itemId", "generationId", "keyEpoch",
+    "chunkSize", "chunkCount", "encryptedManifest", "wrappedFileKey"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "vaultId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "fileId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "itemId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "generationId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "keyEpoch": { "$ref": "common.schema.json#/$defs/positiveInt64" },
+    "chunkSize": { "type": "integer", "const": 1048576 },
+    "chunkCount": { "$ref": "common.schema.json#/$defs/nonNegativeInt64" },
+    "encryptedManifest": { "$ref": "vault-envelope.schema.json" },
+    "wrappedFileKey": { "$ref": "vault-envelope.schema.json" }
+  }
+}

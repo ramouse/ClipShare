@@ -1,0 +1,57 @@
+ARG A1_EMULATOR_RUNTIME_IMAGE=clipshare-test-android-a1:emulator-runtime-local
+ARG C2_DEPENDENCY_CACHE_IMAGE=clipshare-test-android-c2:dependency-cache-local
+
+FROM ${C2_DEPENDENCY_CACHE_IMAGE} AS dependency-cache
+
+FROM ${A1_EMULATOR_RUNTIME_IMAGE} AS fixed
+
+USER root
+
+ENV GRADLE_USER_HOME=/opt/clipshare-a1-gradle-cache
+
+COPY --from=dependency-cache --chown=gradle:gradle \
+    /opt/clipshare-a1-gradle-cache/ /opt/clipshare-a1-gradle-cache/
+COPY --chown=gradle:gradle clients/android /work/current/clients/android
+COPY --chown=gradle:gradle contracts /work/current/contracts
+COPY --chown=gradle:gradle test_harness/android-c2-coverage.init.gradle \
+    /work/harness/android-c2-coverage.init.gradle
+COPY --chown=gradle:gradle test_harness/android-c2-platform-coverage.init.gradle \
+    /work/harness/android-c2-platform-coverage.init.gradle
+COPY --chown=gradle:gradle test_harness/run-android-c2-emulator-matrix.sh \
+    /work/harness/run-android-c2-emulator-matrix.sh
+
+RUN chmod 0555 /work/harness/run-android-c2-emulator-matrix.sh
+
+USER gradle:gradle
+WORKDIR /work/current/clients/android
+
+# The dependency cache is created only by the separately approved bootstrap.
+# Every source build in this fixed image is offline, locked, and hash verified.
+RUN gradle --offline --no-daemon --max-workers=2 --dependency-verification strict \
+        --init-script /work/harness/android-c2-platform-coverage.init.gradle \
+        :platform:android:dependencies --configuration debugRuntimeClasspath
+RUN gradle --offline --no-daemon --max-workers=2 --dependency-verification strict \
+        --init-script /work/harness/android-c2-platform-coverage.init.gradle \
+        :platform:android:dependencies --configuration debugAndroidTestRuntimeClasspath
+RUN gradle --offline --no-daemon --max-workers=2 --dependency-verification strict \
+        --init-script /work/harness/android-c2-platform-coverage.init.gradle \
+        :platform:android:dependencies --configuration androidJacocoAnt
+
+RUN gradle -Dorg.gradle.jvmargs="-Xmx2048m -XX:MaxMetaspaceSize=768m" \
+        --offline --no-daemon --max-workers=2 --dependency-verification strict \
+        c2AndroidCheck :app:compileDebugKotlin
+
+RUN gradle -Dorg.gradle.jvmargs="-Xmx2048m -XX:MaxMetaspaceSize=768m" \
+        --offline --no-daemon --max-workers=2 --dependency-verification strict \
+        --init-script /work/harness/android-c2-coverage.init.gradle \
+        c2JvmCoverageReport c2JvmCoverageVerification
+
+ARG SANDBOX_RUN_ID
+RUN test -n "${SANDBOX_RUN_ID}"
+
+LABEL com.clipshare.sandbox.run-id="${SANDBOX_RUN_ID}"
+LABEL com.clipshare.test-container="true"
+LABEL com.clipshare.test-platform="android-c2"
+
+ENTRYPOINT []
+CMD ["gradle", "--offline", "--no-daemon", "--dependency-verification", "strict", "c2AndroidCheck"]

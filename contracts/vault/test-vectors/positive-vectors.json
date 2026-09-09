@@ -1,0 +1,56 @@
+{
+  "suite": "clipshare-vault-v1",
+  "suiteVersion": 1,
+  "testOnly": true,
+  "vectors": [
+    {
+      "id": "epoch1-item-payload-4k",
+      "purpose": "item-payload",
+      "vaultId": "00112233-4455-4677-8899-aabbccddeeff",
+      "originDeviceId": "11111111-2222-4333-8444-555555555555",
+      "entityId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      "field": "content",
+      "keyEpoch": 1,
+      "epochSecretHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "derivedKeyHex": "9ca15810819a5fa87500cd8d60e07854e8fdd14c7de9d8c1b37ed32186e5d3d2",
+      "noncePrefixHex": "a0a1a2a3",
+      "nonceCounter": 7,
+      "nonceHex": "a0a1a2a30000000000000007",
+      "payloadHex": "436c6970536861726520e4b8ade69687f09f9982000d0ac3a97c65cc81",
+      "payloadUtf8": "ClipShare 中文🙂\u0000\r\né|é",
+      "paddedPlaintextBytes": 4096,
+      "paddedPlaintextSha256Hex": "8e2cbd4fe16120288443f5cac10669b3a604ae5983cdb31190f7950fbe321787",
+      "aadHex": "636c697073686172653a7661756c743a6161643a7631000001000c6974656d2d7061796c6f616400112233445546778899aabbccddeeff11111111222243338444555555555555aaaaaaaabbbb4ccc8dddeeeeeeeeeeee0007636f6e74656e74000000000000000100000000000000070000000000001000",
+      "cipherAndTagBytes": 4112,
+      "cipherAndTagSha256Hex": "b8280ecd0d573ec2e213ed13913976fe18ac9105fb83cdb4479424f84ca5a477"
+    },
+    {
+      "id": "independent-epoch2-same-context",
+      "purpose": "item-payload",
+      "vaultId": "00112233-4455-4677-8899-aabbccddeeff",
+      "originDeviceId": "11111111-2222-4333-8444-555555555555",
+      "keyEpoch": 2,
+      "epochSecretHex": "ffeeddccbbaa99887766554433221100f0e0d0c0b0a090807060504030201000",
+      "derivedKeyHex": "2b8ea87e5d62375960f560a681530ef6e54f0a5fff5b836d333dfb24d6c29f27",
+      "mustDifferFrom": "epoch1-item-payload-4k"
+    },
+    {
+      "id": "file-generation-chunk-3",
+      "purpose": "file-chunk",
+      "vaultId": "00112233-4455-4677-8899-aabbccddeeff",
+      "originDeviceId": "11111111-2222-4333-8444-555555555555",
+      "entityId": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+      "field": "chunk",
+      "keyEpoch": 1,
+      "fileDekHex": "f0e0d0c0b0a09080706050403020100000112233445566778899aabbccddeeff",
+      "noncePrefixHex": "10111213",
+      "nonceCounter": 3,
+      "nonceHex": "101112130000000000000003",
+      "payloadHex": "00ff80017f102030405060708090a0b0",
+      "paddedPlaintextBytes": 16,
+      "aadHex": "636c697073686172653a7661756c743a6161643a7631000001000a66696c652d6368756e6b00112233445546778899aabbccddeeff11111111222243338444555555555555bbbbbbbbcccc4ddd8eeeffffffffffff00056368756e6b000000000000000100000000000000030000000000000010",
+      "cipherAndTagB64Url": "A3ngQLkItFrlXfA9Wlk8rG-D9_q18keJhH0oxaEyxXY",
+      "cipherAndTagSha256Hex": "5ff48face31e2bfb62a2272bef64f9cb6e8ddb40d2cf35a463d3ae81a2de4c45"
+    }
+  ]
+}

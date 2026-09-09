@@ -3,8 +3,10 @@
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>ClipShare.Windows.Platform</RootNamespace>
     <AssemblyName>ClipShare.Windows.Platform</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../ClipShare.Windows.Application/ClipShare.Windows.Application.csproj" />
+    <ProjectReference Include="../ClipShare.Windows.Vault/ClipShare.Windows.Vault.csproj" />
   </ItemGroup>
 </Project>

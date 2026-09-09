@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clipshare.local/contracts/vault/device-key-envelope.schema.json",
+  "title": "ClipShare Vault v1 device epoch-secret wrapper",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "algorithm", "vaultId", "recipientDeviceId", "keyEpoch",
+    "nonce", "cipherAndTag"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "algorithm": { "const": "A256GCM" },
+    "vaultId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "recipientDeviceId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "keyEpoch": { "$ref": "common.schema.json#/$defs/positiveInt64" },
+    "nonce": { "type": "string", "pattern": "^[A-Za-z0-9_-]{16}$" },
+    "cipherAndTag": { "type": "string", "pattern": "^[A-Za-z0-9_-]{64}$" }
+  }
+}

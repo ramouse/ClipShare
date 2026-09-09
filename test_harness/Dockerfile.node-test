@@ -11,6 +11,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked npm ci --ignore-scripts
 
 COPY --chown=node:node app/static ./app/static
 COPY --chown=node:node contracts ./contracts
+COPY --chown=node:node scripts/generate-vault-c2-vectors.mjs ./scripts/generate-vault-c2-vectors.mjs
 COPY --chown=node:node tests/e2e ./tests/e2e
 COPY --chown=node:node test_harness/sandbox_guard.js ./test_harness/sandbox_guard.js
 

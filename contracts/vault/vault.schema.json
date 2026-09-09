@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clipshare.local/contracts/vault/vault.schema.json",
+  "title": "ClipShare Vault v1 state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "vaultId", "initializationId", "formatVersion",
+    "currentWriteEpoch", "initializationState", "wrapperDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "vaultId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "initializationId": { "$ref": "common.schema.json#/$defs/uuid" },
+    "formatVersion": { "const": 1 },
+    "currentWriteEpoch": { "$ref": "common.schema.json#/$defs/positiveInt64" },
+    "initializationState": { "$ref": "common.schema.json#/$defs/initializationState" },
+    "wrapperDigest": { "$ref": "common.schema.json#/$defs/sha256" }
+  }
+}

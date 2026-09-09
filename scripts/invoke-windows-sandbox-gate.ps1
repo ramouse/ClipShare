@@ -4,11 +4,16 @@ param(
     [Parameter(Mandatory = $true)][string]$EvidenceRoot,
     [Parameter(Mandatory = $true)][string]$OfflineToolchainRoot,
     [Parameter(Mandatory = $true)][string]$EnvironmentAttestation,
-    [switch]$VerifyPackageLifecycle
+    [switch]$VerifyPackageLifecycle,
+    [switch]$VerifyC2Vault
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ($VerifyPackageLifecycle -and $VerifyC2Vault) {
+    throw "C2 Vault verification and the W1 package lifecycle gate must run separately."
+}
 
 $dotnetRoot = [IO.Path]::GetFullPath((Join-Path $OfflineToolchainRoot "dotnet"))
 $nugetPackages = [IO.Path]::GetFullPath((Join-Path $OfflineToolchainRoot "nuget-packages"))
@@ -37,6 +42,9 @@ $arguments = @(
 )
 if ($VerifyPackageLifecycle) {
     $arguments += "-VerifyPackageLifecycle"
+}
+if ($VerifyC2Vault) {
+    $arguments += "-VerifyC2Vault"
 }
 
 & powershell.exe @arguments

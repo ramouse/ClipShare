@@ -1,0 +1,79 @@
+import org.gradle.testing.jacoco.plugins.JacocoPluginExtension
+import org.gradle.testing.jacoco.tasks.JacocoCoverageVerification
+import org.gradle.testing.jacoco.tasks.JacocoReport
+
+def coveredProjectPaths = [
+    ':core:vault',
+    ':core:crypto',
+    ':core:sync',
+]
+
+gradle.beforeProject { project ->
+    if (project == project.rootProject) {
+        project.pluginManager.apply('jacoco')
+        project.extensions.getByType(JacocoPluginExtension).toolVersion = '0.8.14'
+    }
+    if (coveredProjectPaths.contains(project.path)) {
+        project.pluginManager.apply('jacoco')
+        project.plugins.withId('java') {
+            project.extensions.getByType(JacocoPluginExtension).toolVersion = '0.8.14'
+        }
+    }
+}
+
+gradle.projectsEvaluated {
+    def coveredProjects = coveredProjectPaths.collect { rootProject.project(it) }
+    def testTasks = coveredProjects.collect { it.tasks.named('test') }
+    def classTrees = coveredProjects.collect { project ->
+        project.fileTree("${project.layout.buildDirectory.get()}/classes/kotlin/main")
+    }
+    def sourceTrees = coveredProjects.collect { project ->
+        project.files("${project.projectDir}/src/main/kotlin")
+    }
+    def executionFiles = coveredProjects.collect { project ->
+        project.file("${project.layout.buildDirectory.get()}/jacoco/test.exec")
+    }
+
+    rootProject.tasks.register('c2JvmCoverageReport', JacocoReport) {
+        group = 'verification'
+        description = 'Generates the aggregate C2 Vault JVM coverage report.'
+        dependsOn(testTasks)
+        executionData(executionFiles)
+        classDirectories.from(classTrees)
+        sourceDirectories.from(sourceTrees)
+        reports {
+            xml.required = true
+            xml.outputLocation = rootProject.layout.buildDirectory.file(
+                'reports/jacoco/c2JvmCoverage/c2JvmCoverage.xml',
+            )
+            html.required = true
+            html.outputLocation = rootProject.layout.buildDirectory.dir(
+                'reports/jacoco/c2JvmCoverage/html',
+            )
+            csv.required = false
+        }
+    }
+
+    rootProject.tasks.register('c2JvmCoverageVerification', JacocoCoverageVerification) {
+        group = 'verification'
+        description = 'Enforces the C2 shared Vault coverage thresholds.'
+        dependsOn(testTasks)
+        executionData(executionFiles)
+        classDirectories.from(classTrees)
+        sourceDirectories.from(sourceTrees)
+        violationRules {
+            rule {
+                limit {
+                    counter = 'LINE'
+                    value = 'COVEREDRATIO'
+                    minimum = 0.90
+                }
+                limit {
+                    counter = 'BRANCH'
+                    value = 'COVEREDRATIO'
+                    minimum = 0.85
+                }
+            }
+        }
+    }
+}

@@ -4,11 +4,16 @@ param(
     [string]$EvidenceRoot = (Join-Path $PSScriptRoot "../.sandbox"),
     [Parameter(Mandatory = $true)][string]$OfflineToolchainRoot,
     [switch]$VerifyPackageLifecycle,
+    [switch]$VerifyC2Vault,
     [switch]$Launch
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ($VerifyPackageLifecycle -and $VerifyC2Vault) {
+    throw "C2 Vault verification and the W1 package lifecycle gate must run separately."
+}
 
 function Get-ExistingDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -37,14 +42,17 @@ if (-not [IO.File]::Exists((Join-Path $tools "dotnet/dotnet.exe")) `
 
 $evidenceBase = [IO.Path]::GetFullPath($EvidenceRoot).TrimEnd('\')
 [IO.Directory]::CreateDirectory($evidenceBase) | Out-Null
-$runId = "w1-wsb-launch-{0}-{1}" -f `
+$runPrefix = if ($VerifyC2Vault) { "c2-wsb-launch" } else { "w1-wsb-launch" }
+$runId = "{0}-{1}-{2}" -f `
+    $runPrefix, `
     [DateTimeOffset]::UtcNow.ToString("yyyyMMddTHHmmssfffZ"), `
     ([Guid]::NewGuid().ToString("N").Substring(0, 8))
 $runRoot = Join-Path $evidenceBase $runId
 [IO.Directory]::CreateDirectory($runRoot) | Out-Null
 
 $lifecycleArgument = if ($VerifyPackageLifecycle) { " -VerifyPackageLifecycle" } else { "" }
-$bootstrapCommand = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\ClipShareSource\scripts\invoke-windows-sandbox-gate.ps1 -SourceRoot C:\ClipShareSource -EvidenceRoot C:\ClipShareEvidence -OfflineToolchainRoot C:\ClipShareTools -EnvironmentAttestation C:\ClipShareEvidence\environment-attestation.json$lifecycleArgument"
+$c2VaultArgument = if ($VerifyC2Vault) { " -VerifyC2Vault" } else { "" }
+$bootstrapCommand = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\ClipShareSource\scripts\invoke-windows-sandbox-gate.ps1 -SourceRoot C:\ClipShareSource -EvidenceRoot C:\ClipShareEvidence -OfflineToolchainRoot C:\ClipShareTools -EnvironmentAttestation C:\ClipShareEvidence\environment-attestation.json$lifecycleArgument$c2VaultArgument"
 $wsb = @"
 <Configuration>
   <Networking>Disable</Networking>
@@ -94,6 +102,7 @@ $attestation = [ordered]@{
     wsbConfigFile = "gate.wsb"
     wsbConfigSha256 = $wsbSha256
     lifecycleRequested = [bool]$VerifyPackageLifecycle
+    c2VaultRequested = [bool]$VerifyC2Vault
     generatedAtUtc = [DateTimeOffset]::UtcNow.ToString("O")
 }
 $attestationPath = Join-Path $runRoot "environment-attestation.json"

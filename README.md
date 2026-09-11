@@ -39,53 +39,111 @@ docker compose up -d --build
 
 ## CLI 用法
 
-`clipshare` 是随项目安装的命令行工具（`[project.scripts]` 入口，`pip install .` 后即可用）。
+`clipshare` 是随项目安装的命令行工具（`[project.scripts]` 入口）。要求 Python 3.12
+或更高版本，建议安装到虚拟环境中：
 
 ```bash
-# 发送：输出分享链接
+# Linux / macOS
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install .
+```
+
+```powershell
+# Windows PowerShell（无需激活虚拟环境）
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install .
+.\.venv\Scripts\clipshare.exe --help
+```
+
+以下示例假定 `clipshare` 已在当前 shell 中可用。
+
+```bash
+# 创建文本分享：成功后输出 /s/{code} 网页链接
 clipshare send "你好，ClipShare"
-clipshare send @notes.txt --expiry 7d --max-views 5
+clipshare send "@notes.txt" --expiry 7d --max-views 5
 
-# 上传文件：流式上传（64KB 分块，不整读进内存），上限 100MB；≤10MB 支持 --encrypted
+# 上传文件：multipart 文件句柄流式发送，不整读进内存；上限 100MB
+# 当前输出为 /api/v1/files/{code} 文件元数据 API 地址
 clipshare upload ./report.pdf --expiry 7d --max-views 5
-clipshare upload ./secret.bin --encrypted --expiry 1h
 
-# 读取：输出分享内容（短码或完整链接均可）
+# 读取文本：接受短码或 /s/{code} 完整网页链接
 clipshare get AbCdEf
 clipshare get http://localhost:8000/s/AbCdEf
 
-# 读取到文件：get 自动回退探测文件端点，--output 按字节流式写盘
+# 保存文本或下载文件：文件短码会自动回退探测文件端点
 clipshare get AbCdEf --output ./report.pdf
+clipshare get AbCdEf --output ./report.pdf --progress
 ```
 
 > `clipshare get AbCdEf --output ./file` 对文本分享写 UTF-8 原文；对文件分享下载原文件
-> （短码 404 且 type=share_not_found 时自动回退探测 `/api/v1/files/{code}`，见 docs/API.md §文件分享）。
+> （文本端点返回 404 `share_not_found` 时自动探测 `/api/v1/files/{code}`）。
+> `--progress` 仅在下载文件时向 stderr 输出累计字节数。
 
 参数与约定：
 
 | 项 | 说明 |
 |----|------|
-| `send` 参数 | `TEXT\|@FILE`：直接传文本，或以 `@` 开头传文件路径（UTF-8） |
-| `upload` 参数 | `PATH`：文件路径，流式 multipart 上传（大文件走 600s 放宽超时） |
-| `--encrypted` | `upload` 专用：E2E 加密（≤10MB，超限服务端 422 拒绝） |
+| `send` 参数 | `TEXT\|@FILE`：直接传文本，或以 `@` 开头传 UTF-8 文件路径并把文件内容创建为文本分享 |
+| `upload` 参数 | `PATH`：上传原始文件，流式 multipart 发送（大文件走 600s 放宽超时） |
+| `get` 参数 | 裸短码或 `/s/{code}` 完整网页链接；完整链接只用于提取短码，不决定请求服务器 |
 | `get --output` | 保存到文件：文本写 UTF-8 原文 / 文件流式写盘（走 600s 放宽超时） |
 | `--expiry` | `1h` / `24h`（默认）/ `7d` / `forever` |
 | `--max-views` | `1` / `5` / `0`（0 = 不限，默认） |
-| `--base-url` | 服务器地址；优先级：`--base-url` > 环境变量 `CLIPSHARE_BASE_URL` > `http://localhost:8000` |
+| `--base-url` | 请求服务器；优先级：`--base-url` > 环境变量 `CLIPSHARE_BASE_URL` > `http://localhost:8000` |
 | 退出码 | `0` 成功 / `1` 网络或 API 错误 / `2` 参数错误 |
-| 输出分流 | 分享链接与内容输出到 stdout，错误信息输出到 stderr |
+| 输出分流 | 分享链接与内容输出到 stdout；错误、保存路径提示与下载进度输出到 stderr |
 
-示例（指向远程服务器）：
+### 连接远程服务器
+
+完整分享链接只用于提取短码，CLI **不会**自动采用链接中的服务器地址。连接远程服务器时，
+必须通过 `--base-url` 或 `CLIPSHARE_BASE_URL` 指定请求目标。
+
+Linux / macOS：
 
 ```bash
-clipshare send "跨机器分享" --base-url https://paste.example.com
+export CLIPSHARE_BASE_URL=https://paste.example.com
+clipshare send "跨机器分享"
 clipshare get https://paste.example.com/s/AbCdEf
 ```
 
-注意事项：
+也可以在每次调用时显式传入服务器地址：
 
-- 加密分享的内容在服务器上保存为密文标记串（`ENC1:…`），`clipshare get` 原样输出该密文，解密需在浏览器中用带密钥（`#k=`）的完整链接打开；
-- 在 Docker 容器内使用 CLI 时，`localhost:8000` 指向容器自身，需显式 `--base-url http://app:8000`（compose 服务名）。
+```bash
+clipshare send "跨机器分享" --base-url https://paste.example.com
+clipshare get https://paste.example.com/s/AbCdEf --base-url https://paste.example.com
+```
+
+Windows PowerShell：
+
+```powershell
+$env:CLIPSHARE_BASE_URL = "https://paste.example.com"
+.\.venv\Scripts\clipshare.exe send "跨机器分享"
+.\.venv\Scripts\clipshare.exe get "https://paste.example.com/s/AbCdEf"
+```
+
+### 文件上传后的读取
+
+`upload` 当前原样输出后端的文件元数据 API 地址，例如
+`https://paste.example.com/api/v1/files/AbCdEf`。`get` 的完整 URL 解析只接受
+`/s/{code}` 网页链接，因此请从上传结果最后一段取得短码再下载：
+
+```bash
+file_api_url="$(clipshare upload ./report.pdf)"
+code="${file_api_url##*/}"
+clipshare get "$code" --output ./downloaded-report.pdf --progress
+```
+
+### 加密分享与 Docker 注意事项
+
+- 当前 CLI 不支持 `send --encrypted` 或 `upload --encrypted`。加密分享通过 Web 页面创建和解密；
+  `clipshare get` 读取加密文本时只会原样输出服务器保存的 `ENC1:…` 密文，不会使用链接中的
+  `#k=` 密钥解密。
+- 使用 `docker compose exec app clipshare ...` 时，CLI 与 Uvicorn 位于同一个 app 容器，默认
+  `http://localhost:8000` 可以直接使用。
+- 使用 `docker compose run --rm app clipshare ...` 创建独立临时容器时，`localhost` 指向临时
+  容器自身，必须显式传入 `--base-url http://app:8000`。独立的 `docker run` 容器只有加入
+  ClipShare Compose 网络后才能解析 `app` 服务名。
 
 ## 开发
 
@@ -111,7 +169,13 @@ Dockerfile 或工具链版本变化时才显式传入 `-Rebuild`。该入口不�
 
 ## 部署
 
-> **现有 Web/CLI v0.2**：仓库文档记录的部署地址为 **http://47.120.13.250**（阿里云 Ubuntu 22.04，Nginx + Docker）。本轮未访问或变更该生产环境；该地址不代表 v0.3 Windows/Android 客户端已上线。原生客户端 Release 必须使用受信任 HTTPS，并在 `v0.3-R1` 全部门禁通过后才能发布。
+当前 Web/CLI 生产环境：
+
+- 地址：https://47.120.13.250
+- 系统：阿里云 Ubuntu 22.04
+- 部署：Docker Compose + Nginx
+- HTTPS：Let's Encrypt / IP 证书
+- 生产环境 `PUBLIC_BASE_URL=https://47.120.13.250`
 
 生产部署（Nginx 反向代理 + HTTPS + 备份）见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 

@@ -164,6 +164,10 @@ curl -s http://localhost:8000/api/v1/shares/AbCdEf/qr -o qr.png
 | `max_views` | string | 否 | 访问次数上限：`1` / `5` / 空串（空串 = 不限，默认；预览与下载共享次数池） |
 | `encrypted` | bool | 否 | 是否 E2E 加密（默认 false）。为 true 时上传体必须是严格 ENC1 marker；**加密前明文**仅 ≤10MiB（`FILE_ENCRYPT_MAX_SIZE`），不是对 Base64URL marker 大小重复套用 10MiB |
 
+> `encrypted` 是 HTTP API 与 Web 客户端支持的字段。当前仓库中的 `clipshare upload`
+> CLI 尚未暴露 `--encrypted` 参数，也不会在本地加密文件；需要提交 `encrypted=true` 的客户端
+> 必须先按 §4.5 把完整文件字节加密为严格 ENC1 envelope，不能只修改表单布尔值。
+
 限制：
 
 - 单文件上限 100MB（`FILE_MAX_SIZE`，默认值）；nginx 已配套 `client_max_body_size 110m`、
@@ -190,6 +194,25 @@ curl -s http://localhost:8000/api/v1/shares/AbCdEf/qr -o qr.png
   "created_at": "2026-08-13T08:13:00.430978Z"
 }
 ```
+
+| 字段 | 说明 |
+|------|------|
+| `code` | 6 位 Base62 文件短码；与文本分享通过 `shortcodes` 表保证跨类型唯一 |
+| `url` | **文件元数据 API 地址**：`PUBLIC_BASE_URL` + `/api/v1/files/{code}`；不是浏览器分享页面地址 |
+| `original_name` | 净化后的原文件名，仅作为元数据与下载文件名，不参与磁盘路径拼接 |
+| `size_bytes` | 实际接收并保存的上传体字节数；加密上传时为 ENC1 envelope 的字节数 |
+| `encrypted` | 服务端记录的加密标记；服务端没有密钥，不负责解密或验证 GCM tag |
+| `expires_at` | RFC 3339 UTC 到期时间；`forever` 时返回 `null` |
+| `max_views` | 预览与下载共享的访问次数上限；不限时返回 `null` |
+
+浏览器查看页统一使用 `PUBLIC_BASE_URL + /s/{code}`。例如上例对应的网页分享地址为
+`http://localhost:8000/s/AbCdEf`。API 响应当前没有单独返回 `web_url` 字段，调用方如需面向
+普通浏览器分享，应使用响应中的 `code` 构造 `/s/{code}`，不要把元数据 API 地址误当作网页地址。
+
+当前 `clipshare upload` CLI 会原样输出这里的 `url`；而 `clipshare get` 的完整 URL 解析器
+只接受 `/s/{code}` 网页链接，不接受 `/api/v1/files/{code}`。CLI 下载上传结果时应提取
+`url` 最后一段短码，或直接传入 `/s/{code}` 网页链接，并另外通过 `--base-url` 或
+`CLIPSHARE_BASE_URL` 指定请求服务器。
 
 ### curl 示例（上传）
 
@@ -262,8 +285,9 @@ curl -s http://localhost:8000/api/v1/files/AbCdEf/download -o 报告.pdf
 - 文件内容为**字节级**加密（`encryptBytes/decryptBytes`，Uint8Array 输入输出，明文二进制不经过字符串层）；
 - 服务端只存密文（集成测试做磁盘字节级零明文断言）；加密文件**不可预览**——预览端点
   返回密文头部无意义，且浏览器无法解密截断的密文，故 `preview_available=false` 且端点直接 415；
-- 加密文件下载后由浏览器解密再 `saveBlob` 保存；`clipshare get --output` 对文件短码下载**密文原样**，
-  解密仍需浏览器（与文本分享一致：服务器协议上拿不到密钥）。
+- 加密文件下载后由浏览器解密再 `saveBlob` 保存；`clipshare get --output` 在传入文件裸短码
+  或 `/s/{code}` 网页链接时下载**密文原样**，解密仍需浏览器（与文本分享一致：服务器
+  协议上拿不到密钥）。
 
 ### 4.6 文件端点错误码（新增部分）
 
@@ -374,7 +398,9 @@ curl -s -i -X POST http://localhost:8000/api/v1/shares \
 - **服务器只保存密文**（数据库层零明文，有集成测试断言）；密文对服务器不可读，加密内容无法通过 API 在服务端解密。
 - 密文约膨胀为原文 1.4 倍（base64url 编码 4/3 + 前缀与 IV 开销）——加密分享的内容长度需按密文长度校验（前端在加密后、发送前本地校验，超限给出友好提示而非服务端 422）。
 - 分享链接中的密钥必须完整复制（含 `#` 之后部分）；二维码只编码不含密钥的 URL，加密分享不能靠扫码传递密钥。
-- **文件加密（v0.2）**：字节级加解密（`encryptBytes/decryptBytes`，见 §4.5），仅 ≤10MB（服务端 422 兜底）；加密文件不可预览、`clipshare get --output` 下载密文原样。
+- **文件加密（v0.2）**：Web 客户端使用字节级加解密（`encryptBytes/decryptBytes`，见 §4.5），
+  仅 ≤10MB（服务端 422 兜底）；加密文件不可预览。当前 CLI 不支持 `upload --encrypted`，
+  `clipshare get --output` 只能下载密文原样，不能使用 `#k=` 解密。
 
 ## 8. 与 /docs（OpenAPI）的关系
 

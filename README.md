@@ -50,13 +50,26 @@ python -m pip install .
 ```
 
 ```powershell
-# Windows PowerShell（无需激活虚拟环境）
+# Windows PowerShell：创建虚拟环境并安装
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install .
+
+# 方式一：不激活虚拟环境，后续每次都使用完整路径
 .\.venv\Scripts\clipshare.exe --help
+
+# 方式二：激活虚拟环境，之后可以直接使用裸命令 clipshare
+& .\.venv\Scripts\Activate.ps1
+clipshare --help
 ```
 
-以下示例假定 `clipshare` 已在当前 shell 中可用。
+> 如果 PowerShell 禁止运行 `Activate.ps1`，可以仅为当前 PowerShell 进程临时放开：
+> `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`，然后重新执行激活命令。
+> 关闭该 PowerShell 窗口后策略自动失效，不会永久修改系统执行策略。
+
+以下示例假定 `clipshare` 已在当前 shell 中可用：Linux / macOS 已执行
+`source .venv/bin/activate`，Windows 已执行 `& .\.venv\Scripts\Activate.ps1`。
+如果 Windows 不激活虚拟环境，请将以下每条命令开头的 `clipshare` 替换为
+`.\.venv\Scripts\clipshare.exe`。
 
 ```bash
 # 创建文本分享：成功后输出 /s/{code} 网页链接

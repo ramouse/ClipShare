@@ -71,6 +71,12 @@ clipshare --help
 如果 Windows 不激活虚拟环境，请将以下每条命令开头的 `clipshare` 替换为
 `.\.venv\Scripts\clipshare.exe`。
 
+Windows PowerShell 如需连接当前部署服务器，可先设置当前会话的请求地址：
+
+```powershell
+$env:CLIPSHARE_BASE_URL = "https://47.120.13.250"
+```
+
 ```bash
 # 创建文本分享：成功后输出 /s/{code} 网页链接
 clipshare send "你好，ClipShare"

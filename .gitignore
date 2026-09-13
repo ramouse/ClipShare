@@ -31,9 +31,10 @@ CLAUDE.md
 # Agent 协作规范仅保留在本机，不进入远端仓库
 AGENTS.md
 
-# 项目文档默认仅保留在本机；API 契约文档是唯一允许跟踪的 docs 文件
+# 项目文档默认仅保留在本机；API 契约与生产部署手册允许跟踪
 /docs/*
 !/docs/API.md
+!/docs/DEPLOYMENT.md
 
 # 测试与工具缓存
 .pytest_cache/

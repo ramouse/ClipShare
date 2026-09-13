@@ -26,6 +26,131 @@
 | 前端 | Bootstrap 5 · 原生 JS · marked · highlight.js · DOMPurify |
 | 部署 | Docker · Docker Compose · Nginx 反向代理 · GitHub Actions CI |
 
+## Web 项目结构与架构
+
+Web、REST API 与共享业务代码集中在 `app/`，采用“页面/API → 应用服务 → 领域规则与
+Repository → PostgreSQL/文件系统”的单向分层；路由不直接编写 SQL，领域层不依赖 FastAPI。
+
+### 目录结构
+
+```text
+app/
+├─ main.py                  # FastAPI 应用工厂、路由/中间件/静态目录挂载、OpenAPI 定制
+├─ api/
+│  ├─ deps.py               # 请求级数据库会话依赖
+│  ├─ params.py             # Header/路径参数与 OpenAPI 约束
+│  └─ routes/
+│     ├─ pages.py           # /、/s/{code} 页面 shell、manifest 与 Service Worker
+│     ├─ shares.py          # 文本分享创建、读取、raw 与服务器二维码 API
+│     ├─ files.py           # 文件上传、元数据、预览与下载 API
+│     └─ health.py          # /healthz 存活探针
+├─ core/
+│  ├─ config.py             # 环境变量与 .env 配置
+│  ├─ errors.py             # application/problem+json 统一错误契约
+│  ├─ security.py           # CSP、安全响应头与限流
+│  ├─ logging.py            # structlog 结构化日志
+│  └─ time.py               # RFC 3339 UTC 时间契约
+├─ domain/                  # 无框架依赖的有效期、次数、短码、ENC1 与文件名规则
+├─ services/                # 创建/读取用例、幂等协调、文件流式存储
+├─ db/                      # SQLAlchemy 模型、Repository、引擎与请求级 Session
+├─ schemas/                 # 文本/文件 API 的 Pydantic 请求与响应模型
+├─ templates/               # Jinja2 页面 shell（首页与查看页）
+└─ static/
+   ├─ js/                   # 创建页、查看页、WebCrypto 与 PWA 注册逻辑
+   ├─ css/                  # 页面样式
+   ├─ vendor/               # 固定版本的 Bootstrap/marked/highlight.js/DOMPurify
+   ├─ icons/                # PWA 图标
+   ├─ manifest.webmanifest  # PWA 安装清单
+   └─ sw.js                 # 离线壳缓存；/s/* 与 /api/* 永不缓存
+
+migrations/                 # Alembic 数据库迁移
+contracts/                  # OpenAPI、Problem Details、ENC1 与 Vault 机器契约/向量
+tests/                      # unit、integration 与 Node/jsdom/WebCrypto E2E
+conf/nginx.conf             # 生产 Nginx HTTP/HTTPS 反向代理
+docker-compose.yml          # 本地开发 app + PostgreSQL
+docker-compose.prod.yml     # 生产 app + PostgreSQL + Nginx
+scripts/                    # 隔离测试、部署与备份入口
+cli/                        # 复用同一 REST API 的 clipshare 命令行客户端
+```
+
+### 分层职责
+
+| 层 | 目录 | 职责与边界 |
+|----|------|------------|
+| 页面与 API 层 | `app/templates`、`app/static`、`app/api` | 渲染页面 shell、校验 HTTP 输入、调用服务、映射响应；禁止直接操作 Repository/SQL |
+| 应用服务层 | `app/services` | 编排创建、幂等重放、短码冲突重试、领取计数、过期处理与文件存储事务 |
+| 领域层 | `app/domain` | 纯业务规则与格式校验，无 FastAPI/SQLAlchemy 依赖，可独立单测 |
+| 数据层 | `app/db` | ORM 模型、短生命周期 Session、Repository、原子计数与短码唯一约束 |
+| 基础设施与契约 | `app/core`、`migrations`、`contracts` | 配置、日志、安全头、错误模型、数据库演进与跨端冻结契约 |
+
+### 系统架构
+
+```
+                         ┌────────────────────────────────────────────┐
+                         │              服务器（Docker）               │
+  浏览器/手机  ──HTTPS──▶ │  nginx 反代(唯一入口, access_log off)       │
+                         │    │ proxy_pass / X-Forwarded-For 覆盖      │
+                         │    │ client_max_body_size 110m / 超时 300s  │
+                         │    ▼                                        │
+                         │  FastAPI 应用（非 root 容器，uid 1000）     │
+                         │    ├─ /api/v1  REST API（JSON）             │
+                         │    ├─ /s/{code} 页面 shell + /static 资源   │
+                         │    ├─ /manifest.webmanifest + /sw.js（PWA） │
+                         │    ├─ 安全中间件（CSP 等安全头/速率限制）    │
+                         │    ▼                                        │
+                         │  PostgreSQL 16（仅 app 内网可达）           │
+                         │  ./data/files 文件卷（上传文件持久化）      │
+                         └────────────────────────────────────────────┘
+```
+
+### 核心请求链路
+
+**创建文本分享**：
+
+```text
+首页表单
+  →（可选）浏览器 WebCrypto AES-256-GCM 加密
+  → POST /api/v1/shares（携带 Idempotency-Key）
+  → 幂等锁与请求指纹
+  → ShareService 生成 Base62 短码
+  → shortcodes + shares 同事务写入
+  → 返回 PUBLIC_BASE_URL/s/{code}
+  → 加密模式仅在浏览器追加 #k={key}
+```
+
+解密密钥位于 URL fragment，不进入 HTTP 请求、服务器、数据库或二维码 API。当前服务器
+`GET /api/v1/shares/{code}/qr` 只能生成不含 `#k=` 的二维码，因此加密分享必须复制带密钥的
+完整链接；浏览器本地生成带密钥二维码属于待实现增强。
+
+**查看文本分享**：
+
+```text
+GET /s/{code}
+  → 只返回 Jinja2 页面 shell，不查数据库、不消耗次数
+  → view.js 调用 GET /api/v1/shares/{code}
+  → 服务端原子领取并增加访问次数
+  → 浏览器按文本 / JSON / Markdown / 代码模式安全渲染
+  → ENC1 内容使用 location.hash 中的密钥在浏览器解密
+```
+
+页面 shell 与内容 API 分离，避免服务端渲染和前端加载各读取一次而重复消耗访问次数。
+Markdown 管线为 `marked → DOMPurify → DOM`，支持标准 Markdown/GFM、表格和代码块；
+当前不包含 KaTeX/MathJax，因此 `$...$`、`$$...$$` 等 LaTeX 数学公式会按普通文本显示。
+
+**上传与领取文件**：
+
+```text
+POST /api/v1/files
+  → multipart 流式接收、计长与 SHA-256
+  → 临时文件完整写入后原子提交
+  → shortcodes + share_files 同事务登记元数据
+  → 元数据读取不消费次数
+  → preview / download 共享访问次数池并原子扣减
+```
+
+未加密大文件不会整文件读入内存；浏览器文件 E2E 加密限 10MiB，加密文件不可预览。
+`/s/{code}` 查看页会先探测文本端点，再按稳定错误类型探测文件元数据并渲染文件卡片。
+
 ## 快速开始
 
 ```bash

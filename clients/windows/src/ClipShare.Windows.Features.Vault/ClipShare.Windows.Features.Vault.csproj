@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>ClipShare.Windows.Features.Vault</RootNamespace>
+    <AssemblyName>ClipShare.Windows.Features.Vault</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../ClipShare.Windows.Application/ClipShare.Windows.Application.csproj" />
+    <ProjectReference Include="../ClipShare.Windows.Infrastructure/ClipShare.Windows.Infrastructure.csproj" />
+    <ProjectReference Include="../ClipShare.Windows.Platform/ClipShare.Windows.Platform.csproj" />
+    <ProjectReference Include="../ClipShare.Windows.Vault/ClipShare.Windows.Vault.csproj" />
+  </ItemGroup>
+</Project>

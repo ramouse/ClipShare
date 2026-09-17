@@ -1,6 +1,7 @@
 package com.clipshare.android
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.ExperimentalTestApi
@@ -21,13 +22,14 @@ class MainActivitySmokeTest {
     val composeRule = createEmptyComposeRule()
 
     @Test
-    fun launchesWithExplicitSendSurface() {
+    fun launchesWithEncryptedVaultSurface() {
         val scenario = ActivityScenario.launch(MainActivity::class.java)
 
         try {
             scenario.prepareForForeground()
-            awaitNodeWithTag("send_draft_input")
-            composeRule.onNodeWithText("发送文本").assertIsDisplayed()
+            awaitNodeWithTag("vault_search")
+            composeRule.onNodeWithText("本地加密内容库").assertIsDisplayed()
+            composeRule.onNodeWithText("内容库").assertIsDisplayed()
             composeRule.onNodeWithText("发送").assertIsDisplayed()
             composeRule.onNodeWithText("接收").assertIsDisplayed()
             composeRule.onNodeWithText("设置").assertIsDisplayed()
@@ -42,11 +44,11 @@ class MainActivitySmokeTest {
 
         try {
             scenario.prepareForForeground()
-            awaitNodeWithTag("send_draft_input")
+            awaitNodeWithTag("vault_search")
             composeRule.onNodeWithText("设置").performClick()
 
             composeRule.onNodeWithTag("monitor_clipboard_switch").assertIsOff()
-            composeRule.onNodeWithTag("auto_sync_switch").assertIsOff()
+            composeRule.onNodeWithTag("auto_sync_switch").assertIsOff().assertIsEnabled()
         } finally {
             scenario.close()
         }
@@ -58,6 +60,8 @@ class MainActivitySmokeTest {
 
         try {
             scenario.prepareForForeground()
+            awaitNodeWithTag("vault_search")
+            composeRule.onNodeWithText("发送").performClick()
             awaitNodeWithTag("send_draft_input")
             composeRule.onNodeWithTag("send_draft_input").performTextInput("draft-before-recreate")
             composeRule.onNodeWithText("接收").performClick()

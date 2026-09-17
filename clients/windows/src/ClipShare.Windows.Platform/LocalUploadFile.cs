@@ -11,9 +11,13 @@ public sealed class LocalUploadFile : IUploadFile
     private readonly object _identityLock = new();
     private byte[]? _expectedSha256;
 
-    public LocalUploadFile(string path, string contentType = "application/octet-stream")
+    public LocalUploadFile(
+        string path,
+        string contentType = "application/octet-stream",
+        long maximumLength = ClipShareValidation.MaxUploadBytes)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumLength);
         _path = Path.GetFullPath(path);
         if (Directory.Exists(_path))
         {
@@ -31,11 +35,11 @@ public sealed class LocalUploadFile : IUploadFile
             ? "application/octet-stream"
             : contentType;
         Length = info.Length;
-        if (Length > ClipShareValidation.MaxUploadBytes)
+        if (Length > maximumLength)
         {
             throw new ClipShareException(
                 "file_size_limit_exceeded",
-                $"文件大小不能超过 {ClipShareValidation.MaxUploadBytes} 字节。");
+                $"文件大小不能超过 {maximumLength} 字节。");
         }
 
         _lastWriteTimeUtc = info.LastWriteTimeUtc;

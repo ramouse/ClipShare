@@ -14,8 +14,8 @@ android {
         applicationId = "com.clipshare.android"
         minSdk = 29
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.3.0-a1"
+        versionCode = 4
+        versionName = "0.3.0-w2a2-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -84,9 +84,11 @@ kotlin {
 dependencies {
     implementation(project(":core:model"))
     implementation(project(":core:network"))
+    implementation(project(":core:vault"))
     implementation(project(":feature:receive"))
     implementation(project(":feature:send"))
     implementation(project(":feature:settings"))
+    implementation(project(":feature:vault"))
     implementation(project(":platform:android"))
 
     implementation(platform(libs.compose.bom))

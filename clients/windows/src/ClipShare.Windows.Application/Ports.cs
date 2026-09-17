@@ -55,5 +55,7 @@ public interface ILocalFilePort
 {
     IUploadFile OpenUpload(string userSelectedPath);
 
+    IUploadFile OpenVaultImport(string userSelectedPath);
+
     IDownloadTarget CreateDownloadTarget(string userSelectedPath);
 }

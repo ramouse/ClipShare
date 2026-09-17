@@ -1,5 +1,8 @@
 using ClipShare.Windows.Application;
+using ClipShare.Windows.Features.Vault;
 using ClipShare.Windows.Platform;
+using ClipShare.Windows.Vault;
+using System.Text;
 using Microsoft.Windows.Storage.Pickers;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -11,14 +14,33 @@ namespace ClipShare.Windows.App;
 public sealed partial class MainWindow : Window, IDisposable
 {
     private readonly MainViewModel _viewModel = new(new LocalFilePort());
+    private readonly VaultFeatureController _vaultController;
+    private readonly WindowsClientSettingsStore _settingsStore;
+    private readonly WindowsInteractionHost _interactionHost = new();
     private readonly LocatorBoundState<FileMetadata> _downloadMetadata = new();
     private readonly Dictionary<Control, bool> _workflowControlStates = new();
+    private readonly Dictionary<Control, bool> _vaultControlStates = new();
     private CancellationTokenSource? _currentOperation;
+    private string? _selectedVaultFilePath;
+    private DateTimeOffset? _deactivatedAt;
+    private bool _vaultInitialized;
+    private bool _rootLoaded;
+    private bool _renderingVault;
+    private bool _loadingSettings;
     private bool _disposed;
 
     public MainWindow()
     {
+        string appData = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ClipShare",
+            "v0.3");
+        var localFiles = new LocalFilePort();
+        _vaultController = new VaultFeatureController(
+            new WindowsEncryptedVaultWorkspace(Path.Combine(appData, "vault"), localFiles));
+        _settingsStore = new WindowsClientSettingsStore(Path.Combine(appData, "settings"));
         InitializeComponent();
+        AppNavigationView.SelectedItem = AppNavigationView.MenuItems[0];
         WorkflowNavigationView.SelectedItem = WorkflowNavigationView.MenuItems[0];
         BaseUrlTextBox.TextChanged += (_, _) => ResetEndpointDerivedState();
         ShareContentTextBox.TextChanged += (_, _) => ResetTextShareOutput();
@@ -28,6 +50,12 @@ public sealed partial class MainWindow : Window, IDisposable
         FileViewsComboBox.SelectionChanged += (_, _) => ResetFileShareOutput();
         ReceiveTextLocatorTextBox.TextChanged += (_, _) => ReceivedTextBox.Text = string.Empty;
         DownloadLocatorTextBox.TextChanged += (_, _) => ResetDownloadPreparation();
+        _vaultController.StateChanged += VaultController_StateChanged;
+        _interactionHost.ClipboardChanged += InteractionHost_ClipboardChanged;
+        _interactionHost.HotKeyPressed += InteractionHost_ActivateVault;
+        _interactionHost.TrayActivated += InteractionHost_ActivateVault;
+        _interactionHost.SessionLocked += InteractionHost_SessionLocked;
+        Activated += MainWindow_Activated;
         Closed += (_, _) => Dispose();
     }
 
@@ -43,8 +71,443 @@ public sealed partial class MainWindow : Window, IDisposable
         _currentOperation = null;
         operation?.Cancel();
         operation?.Dispose();
+        ClearVaultUiPlaintext();
+        _interactionHost.Dispose();
+        _vaultController.ClearSensitiveState();
+        _vaultController.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _viewModel.Dispose();
         GC.SuppressFinalize(this);
+    }
+
+    private async void RootGrid_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (_rootLoaded)
+        {
+            return;
+        }
+
+        _rootLoaded = true;
+        try
+        {
+            WindowsClientSettings settings = await _settingsStore.ReadAsync();
+            _loadingSettings = true;
+            MonitorClipboardToggleSwitch.IsOn = settings.MonitorClipboard;
+            AutoSyncToggleSwitch.IsOn = settings.AutoSyncPairedDevices;
+            _loadingSettings = false;
+
+            IntPtr windowHandle = WinRT.Interop.WindowNative.GetWindowHandle(this);
+            _interactionHost.Start(windowHandle);
+            _interactionHost.SetClipboardMonitoring(settings.MonitorClipboard);
+            HotKeyStatusTextBlock.Text = _interactionHost.HotKeyAvailable
+                ? "快捷键 Ctrl+Shift+V 已注册；托盘入口已启用。"
+                : "快捷键 Ctrl+Shift+V 已被其他应用占用；托盘入口仍可使用。";
+            await EnsureVaultInitializedAsync();
+        }
+        catch (Exception)
+        {
+            _loadingSettings = false;
+            ShowError("内容库或平台入口初始化失败；现有密文保持不变。", InfoBarSeverity.Error);
+        }
+    }
+
+    private async Task EnsureVaultInitializedAsync()
+    {
+        if (_vaultInitialized || _disposed)
+        {
+            return;
+        }
+
+        await _vaultController.InitializeAsync();
+        _vaultInitialized = true;
+        RenderVault(_vaultController.State);
+    }
+
+    private void VaultController_StateChanged(object? sender, VaultFeatureState state)
+    {
+        _ = DispatcherQueue.TryEnqueue(() => RenderVault(state));
+    }
+
+    private void RenderVault(VaultFeatureState state)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _renderingVault = true;
+        try
+        {
+            VaultFolderView[] activeFolders = state.Snapshot.Folders.Where(folder => !folder.Deleted).ToArray();
+            VaultFolderListView.ItemsSource = state.Snapshot.Folders;
+            VaultItemListView.ItemsSource = state.Snapshot.Items;
+            VaultParentFolderComboBox.ItemsSource = activeFolders;
+            VaultTargetFolderComboBox.ItemsSource = activeFolders;
+            VaultMoveTargetComboBox.ItemsSource = activeFolders;
+            if (VaultTargetFolderComboBox.SelectedIndex < 0 && activeFolders.Length != 0)
+            {
+                VaultTargetFolderComboBox.SelectedIndex = 0;
+            }
+
+            VaultNoticeTextBlock.Text = state.Status ?? state.Snapshot.Notice ?? string.Empty;
+            SetVaultInteractionEnabled(!state.IsBusy);
+            if (state.IsFailure && !string.IsNullOrWhiteSpace(state.Status))
+            {
+                ShowError(state.Status, InfoBarSeverity.Error);
+            }
+        }
+        finally
+        {
+            _renderingVault = false;
+        }
+    }
+
+    private async void AppNavigationView_SelectionChanged(
+        NavigationView sender,
+        NavigationViewSelectionChangedEventArgs args)
+    {
+        NavigationViewItem? selectedItem = args.SelectedItemContainer as NavigationViewItem
+            ?? args.SelectedItem as NavigationViewItem;
+        string destination = selectedItem?.Tag?.ToString() ?? "vault";
+        bool showVault = destination == "vault";
+        bool showShare = destination == "share";
+        VaultWorkspaceGrid.Visibility = showVault ? Visibility.Visible : Visibility.Collapsed;
+        SettingsWorkspacePanel.Visibility = destination == "settings" ? Visibility.Visible : Visibility.Collapsed;
+        WorkflowNavigationView.Visibility = showShare ? Visibility.Visible : Visibility.Collapsed;
+        TextWorkflowGrid.Visibility = showShare &&
+            string.Equals((WorkflowNavigationView.SelectedItem as NavigationViewItem)?.Tag?.ToString(), "text", StringComparison.Ordinal)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        FileWorkflowGrid.Visibility = showShare &&
+            string.Equals((WorkflowNavigationView.SelectedItem as NavigationViewItem)?.Tag?.ToString(), "file", StringComparison.Ordinal)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        if (showVault)
+        {
+            await RunVaultOperationAsync(EnsureVaultInitializedAsync);
+        }
+    }
+
+    private async void VaultSectionComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_rootLoaded || !_vaultInitialized || _renderingVault)
+        {
+            return;
+        }
+
+        await RunVaultOperationAsync(() => _vaultController.NavigateAsync(SelectedVaultSection(), VaultSearchTextBox.Text));
+    }
+
+    private async void VaultRefreshButton_Click(object sender, RoutedEventArgs e) =>
+        await RunVaultOperationAsync(() => _vaultController.NavigateAsync(SelectedVaultSection(), VaultSearchTextBox.Text));
+
+    private async void VaultCreateFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        string? parentId = VaultParentFolderComboBox.SelectedValue as string;
+        bool succeeded = await RunVaultOperationAsync(() => _vaultController.CreateFolderAsync(
+            new CreateVaultFolderCommand(VaultFolderNameTextBox.Text, parentId)));
+        if (succeeded)
+        {
+            VaultFolderNameTextBox.Text = string.Empty;
+        }
+    }
+
+    private async void VaultRenameFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        bool succeeded = await RunVaultOperationAsync(() =>
+        {
+            VaultFolderView folder = VaultFolderListView.SelectedItems.OfType<VaultFolderView>().SingleOrDefault()
+                ?? throw new InvalidOperationException("请选择一个要重命名的文件夹。 ");
+            return _vaultController.RenameFolderAsync(
+                new RenameVaultFolderCommand(folder.Id, VaultFolderNameTextBox.Text));
+        });
+        if (succeeded)
+        {
+            VaultFolderNameTextBox.Text = string.Empty;
+        }
+    }
+
+    private async void VaultSaveItemButton_Click(object sender, RoutedEventArgs e)
+    {
+        bool succeeded = await RunVaultOperationAsync(() =>
+        {
+            string folderId = RequireSelectedValue(VaultTargetFolderComboBox, "请先选择目标文件夹。 ");
+            VaultContentType contentType = (VaultContentTypeComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() == "Url"
+                ? VaultContentType.Url
+                : VaultContentType.Text;
+            return _vaultController.SaveTextAsync(
+                new SaveVaultTextCommand(folderId, VaultItemTitleTextBox.Text, VaultItemBodyTextBox.Text, contentType));
+        });
+        if (succeeded)
+        {
+            VaultItemTitleTextBox.Text = string.Empty;
+            VaultItemBodyTextBox.Text = string.Empty;
+        }
+    }
+
+    private async void VaultUpdateItemButton_Click(object sender, RoutedEventArgs e)
+    {
+        await RunVaultOperationAsync(() =>
+        {
+            VaultItemView item = VaultItemListView.SelectedItems.OfType<VaultItemView>().SingleOrDefault()
+                ?? throw new InvalidOperationException("请选择一个文本或 URL 条目。 ");
+            return _vaultController.UpdateTextAsync(
+                new UpdateVaultTextCommand(item.Id, VaultItemTitleTextBox.Text, VaultItemBodyTextBox.Text));
+        });
+    }
+
+    private async void VaultImportFileButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            FileOpenPicker picker = new(AppWindow.Id) { CommitButtonText = "加密导入" };
+            PickFileResult? result = await picker.PickSingleFileAsync();
+            if (result is null)
+            {
+                VaultSelectedFileTextBlock.Text = "未选择文件。";
+                return;
+            }
+
+            _selectedVaultFilePath = result.Path;
+            VaultSelectedFileTextBlock.Text = Path.GetFileName(result.Path);
+            string folderId = RequireSelectedValue(VaultTargetFolderComboBox, "请先选择目标文件夹。 ");
+            string title = string.IsNullOrWhiteSpace(VaultItemTitleTextBox.Text)
+                ? Path.GetFileName(result.Path)
+                : VaultItemTitleTextBox.Text;
+            await RunVaultOperationAsync(() => _vaultController.ImportFileAsync(
+                new ImportVaultFileCommand(folderId, title, _selectedVaultFilePath)));
+            _selectedVaultFilePath = null;
+            VaultSelectedFileTextBlock.Text = "尚未选择 Vault 文件";
+            VaultItemTitleTextBox.Text = string.Empty;
+        }
+        catch (Exception)
+        {
+            _selectedVaultFilePath = null;
+            ShowError("文件导入失败；未记录或显示完整本地路径，现有密文保持不变。", InfoBarSeverity.Error);
+        }
+    }
+
+    private async void VaultExportFileButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            VaultItemView item = VaultItemListView.SelectedItems.OfType<VaultItemView>().SingleOrDefault()
+                ?? throw new InvalidOperationException("请选择一个文件条目。 ");
+            if (item.ContentType != VaultContentType.File)
+            {
+                throw new InvalidOperationException("只有文件条目可以导出。 ");
+            }
+
+            FileSavePicker picker = new(AppWindow.Id)
+            {
+                CommitButtonText = "解密导出",
+                SuggestedFileName = SuggestedFileName.FromUntrusted(item.FileName),
+            };
+            PickFileResult? result = await picker.PickSaveFileAsync();
+            if (result is not null)
+            {
+                await RunVaultOperationAsync(() => _vaultController.ExportFileAsync(item.Id, result.Path));
+            }
+        }
+        catch (Exception)
+        {
+            ShowError("文件导出失败；未记录或显示完整本地路径。", InfoBarSeverity.Error);
+        }
+    }
+
+    private void VaultEntityList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_renderingVault)
+        {
+            return;
+        }
+
+        foreach (VaultEntitySelection selected in _vaultController.State.Selection)
+        {
+            _vaultController.SetSelected(selected, false);
+        }
+
+        foreach (VaultFolderView folder in VaultFolderListView.SelectedItems.OfType<VaultFolderView>())
+        {
+            _vaultController.SetSelected(new VaultEntitySelection(VaultEntityKind.Folder, folder.Id), true);
+        }
+
+        foreach (VaultItemView item in VaultItemListView.SelectedItems.OfType<VaultItemView>())
+        {
+            _vaultController.SetSelected(new VaultEntitySelection(VaultEntityKind.Item, item.Id), true);
+        }
+
+        VaultItemView? editable = VaultItemListView.SelectedItems.OfType<VaultItemView>().SingleOrDefault();
+        if (editable is not null && editable.ContentType != VaultContentType.File)
+        {
+            VaultItemTitleTextBox.Text = editable.Title;
+            VaultItemBodyTextBox.Text = editable.Text ?? string.Empty;
+            VaultContentTypeComboBox.SelectedIndex = editable.ContentType == VaultContentType.Url ? 1 : 0;
+        }
+    }
+
+    private async void VaultMoveButton_Click(object sender, RoutedEventArgs e) =>
+        await RunVaultOperationAsync(() => _vaultController.MoveSelectionAsync(
+            RequireSelectedValue(VaultMoveTargetComboBox, "请选择批量移动目标。 ")));
+
+    private async void VaultDeleteButton_Click(object sender, RoutedEventArgs e) =>
+        await RunVaultOperationAsync(() => _vaultController.DeleteSelectionAsync(includeFolderContents: true));
+
+    private async void VaultRestoreButton_Click(object sender, RoutedEventArgs e) =>
+        await RunVaultOperationAsync(() => _vaultController.RestoreSelectionAsync());
+
+    private async void VaultPurgeButton_Click(object sender, RoutedEventArgs e) =>
+        await RunVaultOperationAsync(() => _vaultController.PurgeSelectionAsync());
+
+    private async void VaultPolicyButton_Click(object sender, RoutedEventArgs e)
+    {
+        SyncPolicy policy = (VaultPolicyComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() == "AllPairedDevices"
+            ? SyncPolicy.AllPairedDevices
+            : SyncPolicy.LocalOnly;
+        await RunVaultOperationAsync(() => _vaultController.SetSelectionPolicyAsync(
+            new VaultPolicyCommand(policy, new HashSet<string>(), VaultClearOverridesCheckBox.IsChecked == true)));
+    }
+
+    private async void MonitorClipboardToggleSwitch_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_loadingSettings || !_rootLoaded)
+        {
+            return;
+        }
+
+        try
+        {
+            WindowsClientSettings current = await _settingsStore.ReadAsync();
+            WindowsClientSettings updated = current with { MonitorClipboard = MonitorClipboardToggleSwitch.IsOn };
+            await _settingsStore.WriteAsync(updated);
+            _interactionHost.SetClipboardMonitoring(updated.MonitorClipboard);
+        }
+        catch (Exception)
+        {
+            ShowError("剪贴板设置保存失败。", InfoBarSeverity.Error);
+        }
+    }
+
+    private async void AutoSyncToggleSwitch_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_loadingSettings || !_rootLoaded)
+        {
+            return;
+        }
+
+        try
+        {
+            WindowsClientSettings current = await _settingsStore.ReadAsync();
+            await _settingsStore.WriteAsync(current with { AutoSyncPairedDevices = AutoSyncToggleSwitch.IsOn });
+            if (AutoSyncToggleSwitch.IsOn)
+            {
+                ShowSuccess("自动同步偏好已保存；需要 P1 配对设备后才会执行。当前没有网络操作。 ");
+            }
+        }
+        catch (Exception)
+        {
+            ShowError("自动同步设置保存失败。", InfoBarSeverity.Error);
+        }
+    }
+
+    private async void InteractionHost_ClipboardChanged(object? sender, EventArgs e)
+    {
+        try
+        {
+            DataPackageView content = Clipboard.GetContent();
+            if (!content.Contains(StandardDataFormats.Text))
+            {
+                return;
+            }
+
+            string text = await content.GetTextAsync();
+            if (string.IsNullOrEmpty(text) || Encoding.UTF8.GetByteCount(text) > VaultFeatureController.MaximumTextBytes)
+            {
+                return;
+            }
+
+            VaultItemTitleTextBox.Text = "剪贴板候选";
+            VaultItemBodyTextBox.Text = text;
+            AppNavigationView.SelectedItem = AppNavigationView.MenuItems[0];
+            VaultNoticeTextBlock.Text = "已读取前台剪贴板候选；只有点击“加密保存”才会写入 Vault。";
+        }
+        catch (Exception)
+        {
+            ShowError("剪贴板候选暂时不可用；没有保存或发送任何内容。", InfoBarSeverity.Warning);
+        }
+    }
+
+    private void InteractionHost_ActivateVault(object? sender, EventArgs e)
+    {
+        AppNavigationView.SelectedItem = AppNavigationView.MenuItems[0];
+        Activate();
+    }
+
+    private void InteractionHost_SessionLocked(object? sender, EventArgs e)
+    {
+        _vaultController.ClearSensitiveState();
+        _vaultInitialized = false;
+        _ = DispatcherQueue.TryEnqueue(() =>
+        {
+            ClearVaultUiPlaintext();
+            RenderVault(_vaultController.State);
+        });
+    }
+
+    private async void MainWindow_Activated(object sender, WindowActivatedEventArgs args)
+    {
+        if (args.WindowActivationState == WindowActivationState.Deactivated)
+        {
+            _deactivatedAt = DateTimeOffset.UtcNow;
+            return;
+        }
+
+        if (_deactivatedAt is DateTimeOffset deactivated && DateTimeOffset.UtcNow - deactivated >= TimeSpan.FromMinutes(10))
+        {
+            _vaultController.ClearSensitiveState();
+            _vaultInitialized = false;
+            ClearVaultUiPlaintext();
+        }
+
+        _deactivatedAt = null;
+        if (_rootLoaded && !_vaultInitialized)
+        {
+            await RunVaultOperationAsync(EnsureVaultInitializedAsync);
+        }
+    }
+
+    private async Task<bool> RunVaultOperationAsync(Func<Task> operation)
+    {
+        try
+        {
+            await operation();
+            return true;
+        }
+        catch (Exception)
+        {
+            ShowError("Vault 操作失败；现有密文保持不变。", InfoBarSeverity.Error);
+            return false;
+        }
+    }
+
+    private VaultSection SelectedVaultSection() =>
+        Enum.TryParse((VaultSectionComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString(), out VaultSection section)
+            ? section
+            : VaultSection.Inbox;
+
+    private static string RequireSelectedValue(ComboBox comboBox, string message) =>
+        comboBox.SelectedValue as string ?? throw new InvalidOperationException(message);
+
+    private void ClearVaultUiPlaintext()
+    {
+        VaultSearchTextBox.Text = string.Empty;
+        VaultFolderNameTextBox.Text = string.Empty;
+        VaultItemTitleTextBox.Text = string.Empty;
+        VaultItemBodyTextBox.Text = string.Empty;
+        VaultSelectedFileTextBlock.Text = "尚未选择 Vault 文件";
+        VaultNoticeTextBlock.Text = string.Empty;
+        VaultFolderListView.ItemsSource = null;
+        VaultItemListView.ItemsSource = null;
+        _selectedVaultFilePath = null;
     }
 
     private async void CreateTextButton_Click(object sender, RoutedEventArgs e)
@@ -230,7 +693,9 @@ public sealed partial class MainWindow : Window, IDisposable
         NavigationView sender,
         NavigationViewSelectionChangedEventArgs args)
     {
-        string? destination = (args.SelectedItem as NavigationViewItem)?.Tag?.ToString();
+        NavigationViewItem? selectedItem = args.SelectedItemContainer as NavigationViewItem
+            ?? args.SelectedItem as NavigationViewItem;
+        string? destination = selectedItem?.Tag?.ToString();
         bool showFiles = string.Equals(destination, "file", StringComparison.Ordinal);
         TextWorkflowGrid.Visibility = showFiles ? Visibility.Collapsed : Visibility.Visible;
         FileWorkflowGrid.Visibility = showFiles ? Visibility.Visible : Visibility.Collapsed;
@@ -390,14 +855,33 @@ public sealed partial class MainWindow : Window, IDisposable
         else
         {
             _workflowControlStates.Clear();
-            CaptureAndDisableControls(TextWorkflowGrid);
-            CaptureAndDisableControls(FileWorkflowGrid);
+            CaptureAndDisableControls(TextWorkflowGrid, _workflowControlStates);
+            CaptureAndDisableControls(FileWorkflowGrid, _workflowControlStates);
         }
 
         CancelOperationButton.IsEnabled = !enabled;
     }
 
-    private void CaptureAndDisableControls(DependencyObject parent)
+    private void SetVaultInteractionEnabled(bool enabled)
+    {
+        if (enabled)
+        {
+            foreach (KeyValuePair<Control, bool> state in _vaultControlStates)
+            {
+                state.Key.IsEnabled = state.Value;
+            }
+
+            _vaultControlStates.Clear();
+        }
+        else if (_vaultControlStates.Count == 0)
+        {
+            CaptureAndDisableControls(VaultWorkspaceGrid, _vaultControlStates);
+        }
+    }
+
+    private static void CaptureAndDisableControls(
+        DependencyObject parent,
+        Dictionary<Control, bool> controlStates)
     {
         int childCount = VisualTreeHelper.GetChildrenCount(parent);
         for (int index = 0; index < childCount; index++)
@@ -405,11 +889,11 @@ public sealed partial class MainWindow : Window, IDisposable
             DependencyObject child = VisualTreeHelper.GetChild(parent, index);
             if (child is Control control)
             {
-                _workflowControlStates.TryAdd(control, control.IsEnabled);
+                controlStates.TryAdd(control, control.IsEnabled);
                 control.IsEnabled = false;
             }
 
-            CaptureAndDisableControls(child);
+            CaptureAndDisableControls(child, controlStates);
         }
     }
 

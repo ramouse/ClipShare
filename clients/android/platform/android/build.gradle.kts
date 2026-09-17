@@ -68,6 +68,7 @@ dependencies {
     implementation(project(":core:crypto"))
     implementation(project(":core:sync"))
     implementation(project(":core:vault"))
+    implementation(project(":feature:vault"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.kotlinx.coroutines.android)

@@ -18,7 +18,12 @@ class SettingsControllerTest {
         assertFalse(repository.value.monitorClipboard)
         assertFalse(repository.value.autoSyncPairedDevices)
         controller.setAutoSyncPairedDevices(true)
-
+        assertFalse(repository.value.monitorClipboard)
+        assertTrue(repository.value.autoSyncPairedDevices)
+        controller.setMonitorClipboard(true)
+        assertTrue(repository.value.monitorClipboard)
+        assertTrue(repository.value.autoSyncPairedDevices)
+        controller.setMonitorClipboard(false)
         assertFalse(repository.value.monitorClipboard)
         assertTrue(repository.value.autoSyncPairedDevices)
         assertFalse(repository.networkTouched)

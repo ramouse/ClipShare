@@ -72,3 +72,13 @@ tasks.register("c2AndroidCheck") {
         ":platform:android:testDebugUnitTest",
     )
 }
+
+tasks.register("w2a2JvmCheck") {
+    group = "verification"
+    description = "Runs the host-independent v0.3-W2/A2 Vault feature unit and static-analysis gates."
+    dependsOn(
+        "c2JvmCheck",
+        ":feature:vault:test",
+        ":feature:vault:detekt",
+    )
+}

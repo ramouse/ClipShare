@@ -9,6 +9,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.waitUntilAtLeastOneExists
 import androidx.test.core.app.ActivityScenario
@@ -22,7 +23,7 @@ class MainActivitySharesheetTest {
     val composeRule = createEmptyComposeRule()
 
     @Test
-    fun actionSendOnlyFillsDraft() {
+    fun actionSendFillsVaultCandidateAndSendDraftWithoutSaving() {
         val sharedText = "https://example.test/from-sharesheet"
         val context = ApplicationProvider.getApplicationContext<Context>()
         val intent = Intent(context, MainActivity::class.java).apply {
@@ -35,9 +36,14 @@ class MainActivitySharesheetTest {
 
         try {
             composeRule.waitUntilAtLeastOneExists(
-                matcher = hasTestTag("send_draft_input"),
+                matcher = hasTestTag("vault_body"),
                 timeoutMillis = 30_000,
             )
+            composeRule.onNodeWithTag("vault_body").assertTextContains(sharedText)
+            composeRule.onNodeWithText("加密保存")
+                .performScrollTo()
+                .assertIsDisplayed()
+            composeRule.onNodeWithText("发送").performClick()
             composeRule.onNodeWithTag("send_draft_input").assertTextContains(sharedText)
             composeRule.onNodeWithText("系统分享 已填入草稿，尚未发送")
                 .performScrollTo()

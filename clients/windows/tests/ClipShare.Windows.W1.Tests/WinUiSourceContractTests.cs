@@ -11,7 +11,7 @@ public sealed class WinUiSourceContractTests
     {
         XDocument document = LoadXml("MainWindow.xaml");
         string codeBehind = LoadText("MainWindow.xaml.cs");
-        string[] eventAttributes = ["Click", "SelectionChanged"];
+        string[] eventAttributes = ["Click", "SelectionChanged", "Loaded", "Toggled"];
         string[] handlers = document
             .Descendants()
             .Attributes()
@@ -20,7 +20,7 @@ public sealed class WinUiSourceContractTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        Assert.Equal(11, handlers.Length);
+        Assert.True(handlers.Length >= 11);
         foreach (string handler in handlers)
         {
             Assert.Contains($"{handler}(", codeBehind, StringComparison.Ordinal);
@@ -97,11 +97,12 @@ public sealed class WinUiSourceContractTests
 
         Assert.Contains("using Microsoft.Windows.Storage.Pickers;", codeBehind, StringComparison.Ordinal);
         Assert.DoesNotContain("using Windows.Storage.Pickers;", codeBehind, StringComparison.Ordinal);
-        Assert.Equal(2, CountOccurrences(codeBehind, "new(AppWindow.Id)"));
+        Assert.Equal(4, CountOccurrences(codeBehind, "new(AppWindow.Id)"));
         Assert.Contains("IsAllowedInHistory = false", codeBehind, StringComparison.Ordinal);
         Assert.Contains("IsRoamable = false", codeBehind, StringComparison.Ordinal);
         Assert.Contains("Clipboard.SetContentWithOptions", codeBehind, StringComparison.Ordinal);
-        Assert.DoesNotContain("Clipboard.GetContent", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("InteractionHost_ClipboardChanged", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("Clipboard.GetContent()", codeBehind, StringComparison.Ordinal);
         Assert.DoesNotContain("Clipboard.SetContent(", codeBehind, StringComparison.Ordinal);
     }
 

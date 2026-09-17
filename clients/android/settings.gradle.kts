@@ -26,6 +26,7 @@ include(
     ":feature:receive",
     ":feature:send",
     ":feature:settings",
+    ":feature:vault",
     ":platform:android",
 )
 

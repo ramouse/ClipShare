@@ -83,6 +83,21 @@ class AndroidEncryptedBlobStore(root: File) {
         return result
     }
 
+    fun deleteCommittedChunks(relativePaths: Collection<String>) {
+        relativePaths.distinct().forEach { relativePath ->
+            val file = resolve(relativePath)
+            if (file.exists()) check(file.delete()) { "Encrypted chunk could not be deleted." }
+            val generation = file.parentFile
+            if (generation?.isDirectory == true && generation.list().orEmpty().isEmpty()) {
+                check(generation.delete()) { "Empty generation directory could not be deleted." }
+            }
+            val fileDirectory = generation?.parentFile
+            if (fileDirectory?.isDirectory == true && fileDirectory.list().orEmpty().isEmpty()) {
+                check(fileDirectory.delete()) { "Empty file directory could not be deleted." }
+            }
+        }
+    }
+
     private fun resolve(relativePath: String): File {
         require(!File(relativePath).isAbsolute) { "Encrypted chunk path must be relative." }
         val candidate = File(root, relativePath).canonicalFile

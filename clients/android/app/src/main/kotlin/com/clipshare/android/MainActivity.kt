@@ -1,6 +1,7 @@
 package com.clipshare.android
 
 import android.content.Intent
+import android.app.KeyguardManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -8,6 +9,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import com.clipshare.core.model.MAX_TEXT_CONTRACT_CHARS
 import com.clipshare.core.model.MAX_TEXT_UTF8_BYTES
 import java.nio.charset.StandardCharsets
+import com.clipshare.feature.vault.ImportVaultFileCommand
+import com.clipshare.feature.vault.ExportVaultFileCommand
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -18,6 +23,9 @@ private const val SAVED_RECEIVE_INPUT = "a1.receive-input"
 
 class MainActivity : ComponentActivity() {
     private lateinit var graph: AppGraph
+    private var pendingVaultImport: Pair<String, String>? = null
+    private var pendingVaultExportItemId: String? = null
+    private var backgroundClearJob: Job? = null
 
     private val openDocument = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) {
@@ -43,12 +51,37 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val openVaultDocument = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val pending = pendingVaultImport
+        pendingVaultImport = null
+        if (uri == null || pending == null) return@registerForActivityResult
+        lifecycleScope.launch {
+            runCatching {
+                graph.vaultController.importFile(
+                    ImportVaultFileCommand(pending.first, pending.second, uri.toString()),
+                )
+            }
+        }
+    }
+
+    private val createVaultDocument = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream"),
+    ) { uri ->
+        val itemId = pendingVaultExportItemId
+        pendingVaultExportItemId = null
+        if (uri == null || itemId == null) return@registerForActivityResult
+        lifecycleScope.launch {
+            runCatching { graph.vaultController.exportFile(ExportVaultFileCommand(itemId, uri.toString())) }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         graph = AppGraph(applicationContext)
         savedInstanceState?.getString(SAVED_SEND_DRAFT)?.let(graph.sendController::updateDraft)
         savedInstanceState?.getString(SAVED_RECEIVE_INPUT)?.let(graph.receiveController::updateInput)
         acceptSharedText(intent)
+        lifecycleScope.launch { runCatching { graph.vaultController.initialize() } }
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 graph.settingsRepository.settings.collect { settings ->
@@ -61,9 +94,18 @@ class MainActivity : ComponentActivity() {
                 sendController = graph.sendController,
                 receiveController = graph.receiveController,
                 settingsController = graph.settingsController,
+                vaultController = graph.vaultController,
                 defaultBaseUrl = BuildConfig.DEFAULT_BASE_URL,
                 onPickFile = { openDocument.launch(arrayOf("*/*")) },
                 onCreateDownload = { fileName -> createDocument.launch(fileName) },
+                onImportVaultFile = { folderId, title ->
+                    pendingVaultImport = folderId to title
+                    openVaultDocument.launch(arrayOf("*/*"))
+                },
+                onExportVaultFile = { itemId, fileName ->
+                    pendingVaultExportItemId = itemId
+                    createVaultDocument.launch(fileName)
+                },
             )
         }
     }
@@ -76,11 +118,24 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        backgroundClearJob?.cancel()
+        backgroundClearJob = null
+        lifecycleScope.launch { runCatching { graph.vaultController.initialize() } }
         graph.clipboardCoordinator.setVisible(true)
     }
 
     override fun onStop() {
         graph.clipboardCoordinator.setVisible(false)
+        val locked = getSystemService(KeyguardManager::class.java)?.isDeviceLocked == true
+        if (locked) {
+            graph.vaultController.clearSensitiveState()
+        } else {
+            backgroundClearJob?.cancel()
+            backgroundClearJob = lifecycleScope.launch {
+                delay(VAULT_BACKGROUND_CLEAR_MILLIS)
+                graph.vaultController.clearSensitiveState()
+            }
+        }
         super.onStop()
     }
 
@@ -110,8 +165,11 @@ class MainActivity : ComponentActivity() {
         if (intent.action != Intent.ACTION_SEND || intent.type != "text/plain") return
         val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString() ?: return
         graph.sendController.acceptExternalText(text, "系统分享")
+        graph.vaultController.acceptExternalText(text, "系统分享候选")
     }
 }
+
+private const val VAULT_BACKGROUND_CLEAR_MILLIS = 10L * 60L * 1000L
 
 private fun String.boundedSavedText(): String? = takeIf {
     it.length <= MAX_TEXT_CONTRACT_CHARS &&

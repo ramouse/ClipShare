@@ -14,9 +14,11 @@ import com.clipshare.feature.receive.ReceiveController
 import com.clipshare.feature.send.SendController
 import com.clipshare.feature.settings.ForegroundClipboardCoordinator
 import com.clipshare.feature.settings.SettingsController
+import com.clipshare.feature.vault.VaultController
 import com.clipshare.platform.android.AndroidClipboardTextSource
 import com.clipshare.platform.android.AndroidDocumentResolver
 import com.clipshare.platform.android.AndroidSettingsRepository
+import com.clipshare.platform.android.vault.AndroidEncryptedVaultWorkspace
 import java.util.UUID
 import kotlinx.coroutines.flow.first
 
@@ -52,18 +54,23 @@ class AppGraph(context: Context) {
         IdempotencyKeyFactory { "a1:${UUID.randomUUID()}" },
     )
     val receiveController = ReceiveController(gatewayProvider)
+    val vaultController = VaultController(AndroidEncryptedVaultWorkspace(context))
 
     private val clipboardSource = AndroidClipboardTextSource(
         context.getSystemService(ClipboardManager::class.java),
     )
     val clipboardCoordinator = ForegroundClipboardCoordinator(
         clipboardSource,
-        onAccepted = { sendController.acceptExternalText(it, "前台剪贴板") },
+        onAccepted = {
+            sendController.acceptExternalText(it, "前台剪贴板")
+            vaultController.acceptExternalText(it, "剪贴板候选")
+        },
         onRejected = sendController::reportMessage,
     )
 
     fun close() {
         clipboardCoordinator.close()
+        vaultController.close()
         httpClient.dispatcher.executorService.shutdown()
         httpClient.connectionPool.evictAll()
     }

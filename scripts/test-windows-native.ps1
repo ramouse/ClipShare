@@ -14,7 +14,11 @@ param(
 
     [switch]$VerifyPackageLifecycle,
 
-    [switch]$VerifyC2Vault
+    [switch]$VerifyC2Vault,
+
+    [switch]$VerifyW2Vault,
+
+    [switch]$PrepareW2AppLock
 )
 
 $ErrorActionPreference = "Stop"
@@ -280,8 +284,67 @@ function Invoke-UiElement {
     throw "UI element '$($Element.Current.AutomationId)' has no invokable automation pattern."
 }
 
+function Get-UiToggleState {
+    param([Parameter(Mandatory = $true)]$Element)
+
+    $pattern = $null
+    if (-not $Element.TryGetCurrentPattern(
+        [System.Windows.Automation.TogglePattern]::Pattern,
+        [ref]$pattern)) {
+        throw "UI element '$($Element.Current.AutomationId)' has no toggle automation pattern."
+    }
+
+    return $pattern.Current.ToggleState
+}
+
+function Set-UiToggleState {
+    param(
+        [Parameter(Mandatory = $true)]$Element,
+        [Parameter(Mandatory = $true)][bool]$Enabled
+    )
+
+    $expected = if ($Enabled) {
+        [System.Windows.Automation.ToggleState]::On
+    }
+    else {
+        [System.Windows.Automation.ToggleState]::Off
+    }
+    if ((Get-UiToggleState -Element $Element) -eq $expected) {
+        return
+    }
+
+    $pattern = $null
+    if (-not $Element.TryGetCurrentPattern(
+        [System.Windows.Automation.TogglePattern]::Pattern,
+        [ref]$pattern)) {
+        throw "UI element '$($Element.Current.AutomationId)' has no toggle automation pattern."
+    }
+    $pattern.Toggle()
+    Wait-Until `
+        -FailureMessage "UI toggle '$($Element.Current.AutomationId)' did not reach the expected state." `
+        -Condition {
+            return (Get-UiToggleState -Element $Element) -eq $expected
+        } | Out-Null
+}
+
+function Get-UiValue {
+    param([Parameter(Mandatory = $true)]$Element)
+
+    $pattern = $null
+    if (-not $Element.TryGetCurrentPattern(
+        [System.Windows.Automation.ValuePattern]::Pattern,
+        [ref]$pattern)) {
+        throw "UI element '$($Element.Current.AutomationId)' has no value automation pattern."
+    }
+
+    return [string]$pattern.Current.Value
+}
+
 function Assert-UiSmoke {
-    param([Parameter(Mandatory = $true)][Diagnostics.Process]$Process)
+    param(
+        [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
+        [switch]$VerifyW2Vault
+    )
 
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes
@@ -301,6 +364,121 @@ function Assert-UiSmoke {
     if ($null -eq $root -or $root.Current.Name -ne "ClipShare") {
         throw "ClipShare main window was not exposed through UI Automation."
     }
+
+    if ($VerifyW2Vault) {
+        $w2RequiredIds = @(
+            "VaultNavigationItem",
+            "ShareNavigationItem",
+            "SettingsNavigationItem",
+            "VaultWorkspaceGrid",
+            "VaultSectionComboBox",
+            "VaultSearchTextBox",
+            "VaultCreateFolderButton",
+            "VaultRenameFolderButton",
+            "VaultSaveItemButton",
+            "VaultImportFileButton",
+            "VaultFolderListView",
+            "VaultItemListView",
+            "VaultNoticeTextBlock"
+        )
+        $w2Elements = @{}
+        foreach ($automationId in $w2RequiredIds) {
+            $element = Get-UiElementByAutomationId -Root $root -AutomationId $automationId
+            if ($null -eq $element) {
+                throw "Required W2 UI Automation element is missing: $automationId"
+            }
+
+            $w2Elements[$automationId] = $element
+        }
+
+        if ($w2Elements.VaultWorkspaceGrid.Current.IsOffscreen) {
+            throw "Vault workspace is not the initial visible W2 view."
+        }
+
+        Invoke-UiElement -Element $w2Elements.SettingsNavigationItem
+        $monitorToggle = Wait-Until `
+            -FailureMessage "W2 settings workspace did not become visible." `
+            -Condition {
+                $candidate = Get-UiElementByAutomationId -Root $root -AutomationId "MonitorClipboardToggleSwitch"
+                if ($null -ne $candidate -and -not $candidate.Current.IsOffscreen) {
+                    return $candidate
+                }
+
+                return $null
+            }
+        $autoSyncToggle = Get-UiElementByAutomationId -Root $root -AutomationId "AutoSyncToggleSwitch"
+        if ($null -eq $monitorToggle -or $null -eq $autoSyncToggle) {
+            throw "W2 clipboard settings toggles are missing."
+        }
+        if ((Get-UiToggleState -Element $monitorToggle) -ne [System.Windows.Automation.ToggleState]::Off `
+            -or (Get-UiToggleState -Element $autoSyncToggle) -ne [System.Windows.Automation.ToggleState]::Off) {
+            throw "W2 clipboard settings must default to off."
+        }
+
+        Set-UiToggleState -Element $autoSyncToggle -Enabled $true
+        if ((Get-UiToggleState -Element $monitorToggle) -ne [System.Windows.Automation.ToggleState]::Off) {
+            throw "Enabling auto-sync unexpectedly enabled clipboard monitoring."
+        }
+        Set-UiToggleState -Element $autoSyncToggle -Enabled $false
+
+        $clipboardSentinel = "W2_UI_CLIPBOARD_CANDIDATE_$([Guid]::NewGuid().ToString('N'))"
+        try {
+            Set-UiToggleState -Element $monitorToggle -Enabled $true
+            Invoke-UiElement -Element $w2Elements.VaultNavigationItem
+            Wait-Until `
+                -FailureMessage "Vault workspace did not become visible after W2 navigation." `
+                -Condition {
+                    $candidate = Get-UiElementByAutomationId -Root $root -AutomationId "VaultWorkspaceGrid"
+                    return $null -ne $candidate -and -not $candidate.Current.IsOffscreen
+                } | Out-Null
+
+            [System.Windows.Forms.Clipboard]::SetText($clipboardSentinel)
+            Wait-Until `
+                -FailureMessage "Event-driven clipboard monitoring did not populate the explicit-save candidate." `
+                -Condition {
+                    $candidate = Get-UiElementByAutomationId -Root $root -AutomationId "VaultItemBodyTextBox"
+                    return $null -ne $candidate -and (Get-UiValue -Element $candidate) -eq $clipboardSentinel
+                } | Out-Null
+
+            Invoke-UiElement -Element $w2Elements.ShareNavigationItem
+            [System.Windows.Forms.SendKeys]::SendWait("^+v")
+            Wait-Until `
+                -FailureMessage "Registered Ctrl+Shift+V hotkey did not reactivate the Vault workspace." `
+                -Condition {
+                    $candidate = Get-UiElementByAutomationId -Root $root -AutomationId "VaultWorkspaceGrid"
+                    return $null -ne $candidate -and -not $candidate.Current.IsOffscreen
+                } | Out-Null
+        }
+        finally {
+            [System.Windows.Forms.Clipboard]::Clear()
+            Invoke-UiElement -Element $w2Elements.SettingsNavigationItem
+            $monitorToggle = Wait-Until `
+                -FailureMessage "W2 settings workspace did not reopen for cleanup." `
+                -Condition {
+                    $candidate = Get-UiElementByAutomationId -Root $root -AutomationId "MonitorClipboardToggleSwitch"
+                    if ($null -ne $candidate -and -not $candidate.Current.IsOffscreen) {
+                        return $candidate
+                    }
+
+                    return $null
+                }
+            $autoSyncToggle = Get-UiElementByAutomationId -Root $root -AutomationId "AutoSyncToggleSwitch"
+            Set-UiToggleState -Element $autoSyncToggle -Enabled $false
+            Set-UiToggleState -Element $monitorToggle -Enabled $false
+        }
+    }
+
+    $shareNavigationItem = Get-UiElementByAutomationId -Root $root -AutomationId "ShareNavigationItem"
+    if ($null -eq $shareNavigationItem) {
+        throw "Required UI Automation element is missing: ShareNavigationItem"
+    }
+    Invoke-UiElement -Element $shareNavigationItem
+    Wait-Until `
+        -FailureMessage "Anonymous-share workspace did not become visible after navigation." `
+        -Condition {
+            $candidate = Get-UiElementByAutomationId -Root $root -AutomationId "WorkflowNavigationView"
+            return $null -ne $candidate -and -not $candidate.Current.IsOffscreen
+        } | Out-Null
 
     $requiredIds = @(
         "WorkflowNavigationView",
@@ -394,8 +572,14 @@ if ($env:CLIPSHARE_EPHEMERAL_WINDOWS -ne "1") {
     throw "Set CLIPSHARE_EPHEMERAL_WINDOWS=1 only inside an approved disposable Windows Sandbox or temporary VM."
 }
 
-if ($VerifyPackageLifecycle -and $VerifyC2Vault) {
-    throw "C2 Vault verification and the W1 package lifecycle gate must run as separate scoped gates."
+if ($VerifyC2Vault -and ($VerifyPackageLifecycle -or $VerifyW2Vault -or $PrepareW2AppLock)) {
+    throw "C2 Vault verification must run as a separate scoped gate."
+}
+if ($PrepareW2AppLock -and ($VerifyPackageLifecycle -or $VerifyW2Vault)) {
+    throw "W2 App lock preparation must run separately from build, test, and package lifecycle verification."
+}
+if ($VerifyW2Vault -and -not $VerifyPackageLifecycle) {
+    throw "W2 Vault verification requires the disposable package lifecycle gate."
 }
 
 $source = Get-ResolvedDirectory -Path $SourceRoot
@@ -432,6 +616,24 @@ else {
 }
 if ($attestedC2Vault -ne [bool]$VerifyC2Vault) {
     throw "Environment attestation C2 Vault intent does not match the native gate invocation."
+}
+$attestedW2Vault = if ($attestation.PSObject.Properties.Name -contains "w2VaultRequested") {
+    [bool]$attestation.w2VaultRequested
+}
+else {
+    $false
+}
+if ($attestedW2Vault -ne [bool]$VerifyW2Vault) {
+    throw "Environment attestation W2 Vault intent does not match the native gate invocation."
+}
+$attestedW2LockPreparation = if ($attestation.PSObject.Properties.Name -contains "w2LockPreparationRequested") {
+    [bool]$attestation.w2LockPreparationRequested
+}
+else {
+    $false
+}
+if ($attestedW2LockPreparation -ne [bool]$PrepareW2AppLock) {
+    throw "Environment attestation W2 App lock preparation intent does not match the native gate invocation."
 }
 
 if ($attestation.environment -eq "WindowsSandbox") {
@@ -497,7 +699,18 @@ if ($LASTEXITCODE -ne 0 -or $sdkVersion -ne "10.0.400") {
     throw "W1 native gate requires exactly .NET SDK 10.0.400; found '$sdkVersion'."
 }
 
-$runPrefix = if ($VerifyC2Vault) { "c2-native" } else { "w1-native" }
+$runPrefix = if ($PrepareW2AppLock) {
+    "w2-lock"
+}
+elseif ($VerifyW2Vault) {
+    "w2-native"
+}
+elseif ($VerifyC2Vault) {
+    "c2-native"
+}
+else {
+    "w1-native"
+}
 $runId = "{0}-{1}-{2}" -f `
     $runPrefix, `
     [DateTimeOffset]::UtcNow.ToString("yyyyMMddTHHmmssfffZ"), `
@@ -538,6 +751,10 @@ $result = [ordered]@{
     wsbConfigSha256 = $resultWsbSha256
     lifecycleRequested = [bool]$VerifyPackageLifecycle
     c2VaultRequested = [bool]$VerifyC2Vault
+    w2VaultRequested = [bool]$VerifyW2Vault
+    w2LockPreparationRequested = [bool]$PrepareW2AppLock
+    executionCompleted = $false
+    requiredEvidenceComplete = $false
     status = "FAILED"
 }
 
@@ -573,12 +790,33 @@ try {
     $windowsRoot = Join-Path $sourceCopy "clients/windows"
     $solution = Join-Path $windowsRoot "ClipShare.Windows.slnx"
     $appProject = Join-Path $windowsRoot "src/ClipShare.Windows.App/ClipShare.Windows.App.csproj"
+    $appLock = Join-Path $windowsRoot "src/ClipShare.Windows.App/packages.lock.json"
     $c2Project = Join-Path $windowsRoot "tests/ClipShare.Windows.C2.Tests/ClipShare.Windows.C2.Tests.csproj"
+    $w2Project = Join-Path $windowsRoot "tests/ClipShare.Windows.W2.Tests/ClipShare.Windows.W2.Tests.csproj"
     $offlineConfig = Join-Path $windowsRoot "NuGet.offline.config"
 
     Push-Location $windowsRoot
     try {
-        if ($VerifyC2Vault) {
+        if ($PrepareW2AppLock) {
+            Invoke-Checked -FilePath "dotnet" -Arguments @(
+                "restore", $appProject,
+                "--configfile", $offlineConfig,
+                "--force-evaluate",
+                "--packages", $nugetPackages,
+                "--property:ContinuousIntegrationBuild=true"
+            )
+            if (-not [IO.File]::Exists($appLock)) {
+                throw "W2 App restore did not produce packages.lock.json."
+            }
+
+            $preparedLock = Join-Path $evidence "$runId/app-packages.lock.json"
+            Copy-Item -LiteralPath $appLock -Destination $preparedLock
+            $result.w2AppLockPrepared = [IO.Path]::GetFileName($preparedLock)
+            $result.w2AppLockSha256 = (
+                Get-FileHash -LiteralPath $preparedLock -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+        }
+        elseif ($VerifyC2Vault) {
             $c2Evidence = Join-Path $evidence "$runId/c2-vault"
             $c2TestOutput = Join-Path $buildArtifacts "c2-test-output"
             [IO.Directory]::CreateDirectory($c2Evidence) | Out-Null
@@ -646,6 +884,39 @@ try {
                 "--property:ContinuousIntegrationBuild=true"
             )
 
+            if ($VerifyW2Vault) {
+                $w2Evidence = Join-Path $evidence "$runId/w2-vault"
+                $w2TestOutput = Join-Path $buildArtifacts "w2-test-output"
+                [IO.Directory]::CreateDirectory($w2Evidence) | Out-Null
+                [IO.Directory]::CreateDirectory($w2TestOutput) | Out-Null
+                $env:CLIPSHARE_TEST_OUTPUT = $w2TestOutput
+                Invoke-Checked -FilePath "dotnet" -Arguments @(
+                    "test",
+                    "--project", $w2Project,
+                    "--configuration", "Release",
+                    "--no-restore",
+                    "--property:ContinuousIntegrationBuild=true",
+                    "--coverlet",
+                    "--coverlet-output-format", "cobertura",
+                    "--results-directory", $w2Evidence,
+                    "--minimum-expected-tests", "13",
+                    "--no-ansi",
+                    "--no-progress"
+                )
+                $w2CoverageReports = @(
+                    Get-ChildItem -LiteralPath $w2Evidence -File -Filter "coverage.cobertura.*.xml"
+                )
+                if ($w2CoverageReports.Count -ne 1) {
+                    throw "W2 native test run must produce exactly one Cobertura report; found $($w2CoverageReports.Count)."
+                }
+                $result.w2Vault = "DPAPI-CurrentUser-SQLite-blob-settings-session-source-pass"
+                $result.w2MinimumExpectedTests = 13
+                $result.w2CoverageReport = $w2CoverageReports[0].Name
+                $result.w2CoverageSha256 = (
+                    Get-FileHash -LiteralPath $w2CoverageReports[0].FullName -Algorithm SHA256
+                ).Hash.ToLowerInvariant()
+            }
+
             $packageArguments = @(
                 "build", $appProject,
                 "--configuration", "Release",
@@ -653,6 +924,8 @@ try {
                 "--property:ContinuousIntegrationBuild=true",
                 "--property:GenerateAppxPackageOnBuild=true",
                 "--property:AppxSymbolPackageEnabled=false",
+                "--property:DebugSymbols=false",
+                "--property:DebugType=None",
                 "--property:AppxPackageDir=$packageOutput\"
             )
 
@@ -660,7 +933,7 @@ try {
             $certificate = New-SelfSignedCertificate `
                 -Type Custom `
                 -Subject "CN=ClipShare-Development-Only" `
-                -FriendlyName "ClipShare W1 disposable test certificate" `
+                -FriendlyName "ClipShare disposable native-gate certificate" `
                 -KeyUsage DigitalSignature `
                 -CertStoreLocation "Cert:\CurrentUser\My" `
                 -TextExtension @(
@@ -668,7 +941,7 @@ try {
                     "2.5.29.19={text}"
                 )
             $certificateThumbprint = $certificate.Thumbprint
-            $publicCertificatePath = Join-Path $workRoot "clipshare-w1-disposable.cer"
+            $publicCertificatePath = Join-Path $workRoot "clipshare-disposable-native-gate.cer"
             Export-Certificate -Cert $certificate -FilePath $publicCertificatePath | Out-Null
             $trustedCertificate = Import-Certificate `
                 -FilePath $publicCertificatePath `
@@ -820,7 +1093,7 @@ try {
                         Select-Object -First 1
                 }
             try {
-                Assert-UiSmoke -Process $launchedProcess
+                Assert-UiSmoke -Process $launchedProcess -VerifyW2Vault:$VerifyW2Vault
             }
             finally {
                 $launchedProcess.Refresh()
@@ -846,9 +1119,20 @@ try {
                     $result.startupBreadcrumbs = @()
                 }
             }
-            $result.uiSmoke = "basic-ui-automation-smoke-pass"
-            Stop-Process -Id $launchedProcess.Id -Force
-            $launchedProcess.WaitForExit(10000)
+            $result.uiSmoke = if ($VerifyW2Vault) {
+                "vault-independent-settings-event-clipboard-hotkey-and-anonymous-share-ui-automation-pass"
+            }
+            else {
+                "basic-ui-automation-smoke-pass"
+            }
+            if (-not $launchedProcess.CloseMainWindow()) {
+                throw "ClipShare main window did not accept a graceful close request."
+            }
+            if (-not $launchedProcess.WaitForExit(10000)) {
+                throw "ClipShare process did not exit after its main window was closed."
+            }
+            $result.applicationGracefulClose = $true
+            $result.applicationExitCode = $launchedProcess.ExitCode
             $launchedProcess.Dispose()
             $launchedProcess = $null
 
@@ -880,6 +1164,7 @@ try {
         Pop-Location
     }
 
+    $result.executionCompleted = $true
 }
 catch {
     $result.errorType = $_.Exception.GetType().FullName
@@ -994,7 +1279,29 @@ finally {
         $result.trustedCertificateInventoryUnchanged = $false
     }
     $result.cleanupErrors = @($cleanupErrors)
-    $result.status = if ($null -eq $gateError `
+    $result.requiredEvidenceComplete = if ($PrepareW2AppLock) {
+        $result.Contains("w2AppLockPrepared") -and $result.Contains("w2AppLockSha256")
+    }
+    elseif ($VerifyC2Vault) {
+        $result.Contains("c2Vault") -and $result.Contains("c2CoverageSha256")
+    }
+    elseif ($VerifyW2Vault) {
+        $result.Contains("w2Vault") `
+            -and $result.Contains("w2CoverageSha256") `
+            -and $result.Contains("package") `
+            -and $result.Contains("uiSmoke") `
+            -and $result.Contains("applicationGracefulClose") `
+            -and $result.applicationGracefulClose `
+            -and $result.Contains("lifecycle")
+    }
+    else {
+        $result.Contains("package") `
+            -and (-not $VerifyPackageLifecycle `
+                -or ($result.Contains("uiSmoke") -and $result.Contains("lifecycle")))
+    }
+    $result.status = if ($result.executionCompleted `
+        -and $result.requiredEvidenceComplete `
+        -and $null -eq $gateError `
         -and $cleanupErrors.Count -eq 0 `
         -and $result.packageInventoryUnchanged `
         -and $result.runtimePackageInventoryUnchanged `

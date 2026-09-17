@@ -4,8 +4,14 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="ClipShare">
     <ScrollViewer>
-        <Grid MaxWidth="880" Padding="32" HorizontalAlignment="Center">
+        <Grid
+            x:Name="RootGrid"
+            MaxWidth="1040"
+            Padding="32"
+            HorizontalAlignment="Center"
+            Loaded="RootGrid_Loaded">
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -15,7 +21,7 @@
 
             <StackPanel Grid.Row="0" Spacing="8">
                 <TextBlock Text="ClipShare" FontSize="32" FontWeight="SemiBold" />
-                <TextBlock Text="匿名、显式发送与领取。领取和下载会按服务器授权消耗访问次数。" TextWrapping="Wrap" />
+                <TextBlock Text="本地优先的加密内容库，以及匿名、显式发送与领取。" TextWrapping="Wrap" />
                 <InfoBar
                     IsOpen="True"
                     IsClosable="False"
@@ -35,11 +41,215 @@
 
             <NavigationView
                 Grid.Row="1"
+                x:Name="AppNavigationView"
+                Margin="0,20,0,0"
+                IsBackButtonVisible="Collapsed"
+                IsSettingsVisible="False"
+                PaneDisplayMode="Top"
+                SelectionChanged="AppNavigationView_SelectionChanged">
+                <NavigationView.MenuItems>
+                    <NavigationViewItem x:Name="VaultNavigationItem" Content="内容库" Icon="Library" Tag="vault" />
+                    <NavigationViewItem x:Name="ShareNavigationItem" Content="匿名分享" Icon="Send" Tag="share" />
+                    <NavigationViewItem x:Name="SettingsNavigationItem" Content="设置" Icon="Setting" Tag="settings" />
+                </NavigationView.MenuItems>
+            </NavigationView>
+
+            <Grid
+                Grid.Row="2"
+                Grid.RowSpan="3"
+                x:Name="VaultWorkspaceGrid"
+                Margin="0,16,0,0"
+                RowSpacing="12"
+                AutomationProperties.Name="本地加密内容库">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid Grid.Row="0" ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <ComboBox
+                        x:Name="VaultSectionComboBox"
+                        Header="内容视图"
+                        SelectedIndex="0"
+                        SelectionChanged="VaultSectionComboBox_SelectionChanged">
+                        <ComboBoxItem Content="收件箱" Tag="Inbox" />
+                        <ComboBoxItem Content="全部内容" Tag="All" />
+                        <ComboBoxItem Content="文件夹" Tag="Folders" />
+                        <ComboBoxItem Content="最近使用" Tag="Recent" />
+                        <ComboBoxItem Content="已同步" Tag="Synced" />
+                        <ComboBoxItem Content="仅本机" Tag="LocalOnly" />
+                        <ComboBoxItem Content="回收站" Tag="Trash" />
+                        <ComboBoxItem Content="设备" Tag="Devices" />
+                    </ComboBox>
+                    <TextBox
+                        Grid.Column="1"
+                        x:Name="VaultSearchTextBox"
+                        Header="搜索（仅内存，不搜索文件正文）"
+                        PlaceholderText="文件夹、标题、文本或 URL" />
+                    <Button
+                        Grid.Column="2"
+                        x:Name="VaultRefreshButton"
+                        Content="刷新/搜索"
+                        VerticalAlignment="Bottom"
+                        Click="VaultRefreshButton_Click" />
+                </Grid>
+
+                <Grid Grid.Row="1" ColumnSpacing="18">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="新建普通文件夹" Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <TextBox x:Name="VaultFolderNameTextBox" Header="名称" MaxLength="512" />
+                        <ComboBox
+                            x:Name="VaultParentFolderComboBox"
+                            Header="父文件夹（留空为顶层）"
+                            DisplayMemberPath="Name"
+                            SelectedValuePath="Id" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="VaultCreateFolderButton" Content="创建文件夹" Click="VaultCreateFolderButton_Click" />
+                            <Button x:Name="VaultRenameFolderButton" Content="重命名所选" Click="VaultRenameFolderButton_Click" />
+                        </StackPanel>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Spacing="8">
+                        <TextBlock Text="显式保存文本、URL 或文件" Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <ComboBox
+                            x:Name="VaultTargetFolderComboBox"
+                            Header="目标文件夹"
+                            DisplayMemberPath="Name"
+                            SelectedValuePath="Id" />
+                        <TextBox x:Name="VaultItemTitleTextBox" Header="标题" MaxLength="512" />
+                        <ComboBox x:Name="VaultContentTypeComboBox" Header="类型" SelectedIndex="0">
+                            <ComboBoxItem Content="文本" Tag="Text" />
+                            <ComboBoxItem Content="HTTP(S) URL" Tag="Url" />
+                        </ComboBox>
+                        <TextBox
+                            x:Name="VaultItemBodyTextBox"
+                            Header="正文或 URL（剪贴板监测只填入候选，必须点击保存）"
+                            AcceptsReturn="True"
+                            MinHeight="96"
+                            TextWrapping="Wrap" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="VaultSaveItemButton" Content="加密保存" Click="VaultSaveItemButton_Click" Style="{StaticResource AccentButtonStyle}" />
+                            <Button x:Name="VaultUpdateItemButton" Content="更新所选文本" Click="VaultUpdateItemButton_Click" />
+                            <Button x:Name="VaultImportFileButton" Content="导入文件…" Click="VaultImportFileButton_Click" />
+                            <Button x:Name="VaultExportFileButton" Content="导出所选文件…" Click="VaultExportFileButton_Click" />
+                        </StackPanel>
+                        <TextBlock x:Name="VaultSelectedFileTextBlock" Text="尚未选择 Vault 文件" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Grid>
+
+                <Grid Grid.Row="2" ColumnSpacing="18">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="文件夹" Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <ListView
+                            x:Name="VaultFolderListView"
+                            MinHeight="150"
+                            SelectionMode="Multiple"
+                            DisplayMemberPath="Name"
+                            SelectionChanged="VaultEntityList_SelectionChanged" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Spacing="6">
+                        <TextBlock Text="条目" Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <ListView
+                            x:Name="VaultItemListView"
+                            MinHeight="150"
+                            SelectionMode="Multiple"
+                            DisplayMemberPath="Title"
+                            SelectionChanged="VaultEntityList_SelectionChanged" />
+                    </StackPanel>
+                </Grid>
+
+                <Grid Grid.Row="3" ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <ComboBox
+                        x:Name="VaultMoveTargetComboBox"
+                        Header="批量移动目标"
+                        DisplayMemberPath="Name"
+                        SelectedValuePath="Id" />
+                    <Button Grid.Column="1" Content="移动" VerticalAlignment="Bottom" Click="VaultMoveButton_Click" />
+                    <Button Grid.Column="2" Content="移入回收站" VerticalAlignment="Bottom" Click="VaultDeleteButton_Click" />
+                    <Button Grid.Column="3" Content="恢复" VerticalAlignment="Bottom" Click="VaultRestoreButton_Click" />
+                    <Button Grid.Column="4" Content="永久删除" VerticalAlignment="Bottom" Click="VaultPurgeButton_Click" />
+                </Grid>
+
+                <Grid Grid.Row="4" ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="240" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <ComboBox x:Name="VaultPolicyComboBox" Header="批量同步策略" SelectedIndex="0">
+                        <ComboBoxItem Content="仅本机" Tag="LocalOnly" />
+                        <ComboBoxItem Content="全部已配对设备" Tag="AllPairedDevices" />
+                    </ComboBox>
+                    <CheckBox
+                        Grid.Column="1"
+                        x:Name="VaultClearOverridesCheckBox"
+                        Content="清除后代显式覆盖"
+                        VerticalAlignment="Bottom" />
+                    <Button Grid.Column="2" Content="应用策略" VerticalAlignment="Bottom" Click="VaultPolicyButton_Click" />
+                    <TextBlock
+                        Grid.Column="3"
+                        x:Name="VaultNoticeTextBlock"
+                        Margin="12,0,0,0"
+                        VerticalAlignment="Bottom"
+                        TextWrapping="Wrap" />
+                </Grid>
+            </Grid>
+
+            <StackPanel
+                Grid.Row="2"
+                Grid.RowSpan="3"
+                x:Name="SettingsWorkspacePanel"
+                Margin="0,16,0,0"
+                Spacing="14"
+                Visibility="Collapsed">
+                <TextBlock Text="剪贴板与同步设置" Style="{StaticResource SubtitleTextBlockStyle}" />
+                <ToggleSwitch
+                    x:Name="MonitorClipboardToggleSwitch"
+                    Header="监测剪贴板"
+                    OffContent="关闭"
+                    OnContent="开启"
+                    Toggled="MonitorClipboardToggleSwitch_Toggled" />
+                <TextBlock Text="Windows 使用事件监听。关闭时立即注销；监测只产生候选，不会自动保存。" TextWrapping="Wrap" />
+                <ToggleSwitch
+                    x:Name="AutoSyncToggleSwitch"
+                    Header="自动同步到已配对设备"
+                    OffContent="关闭"
+                    OnContent="开启"
+                    Toggled="AutoSyncToggleSwitch_Toggled" />
+                <TextBlock Text="当前 W2/A2 尚未实现设备配对；该偏好会保存，但不会发起网络或伪造同步成功。" TextWrapping="Wrap" />
+                <TextBlock x:Name="HotKeyStatusTextBlock" Text="快捷键：Ctrl+Shift+V" TextWrapping="Wrap" />
+            </StackPanel>
+
+            <NavigationView
+                Grid.Row="2"
                 x:Name="WorkflowNavigationView"
                 Margin="0,24,0,0"
                 IsBackButtonVisible="Collapsed"
                 IsSettingsVisible="False"
                 PaneDisplayMode="Top"
+                Visibility="Collapsed"
                 SelectionChanged="WorkflowNavigationView_SelectionChanged">
                 <NavigationView.MenuItems>
                     <NavigationViewItem x:Name="TextNavigationItem" Content="文本" Icon="Edit" Tag="text" />
@@ -48,7 +258,7 @@
             </NavigationView>
 
             <Grid
-                Grid.Row="2"
+                Grid.Row="3"
                 x:Name="TextWorkflowGrid"
                 Margin="0,16,0,0"
                 ColumnSpacing="24"
@@ -96,7 +306,7 @@
             </Grid>
 
             <Grid
-                Grid.Row="3"
+                Grid.Row="4"
                 x:Name="FileWorkflowGrid"
                 Margin="0,16,0,0"
                 ColumnSpacing="24"
@@ -189,7 +399,7 @@
             </Grid>
 
             <InfoBar
-                Grid.Row="4"
+                Grid.Row="5"
                 x:Name="StatusInfoBar"
                 Margin="0,28,0,0"
                 IsOpen="False"

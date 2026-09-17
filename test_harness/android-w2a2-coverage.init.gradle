@@ -1,0 +1,67 @@
+import org.gradle.testing.jacoco.plugins.JacocoPluginExtension
+import org.gradle.testing.jacoco.tasks.JacocoCoverageVerification
+import org.gradle.testing.jacoco.tasks.JacocoReport
+
+def featurePath = ':feature:vault'
+
+gradle.beforeProject { project ->
+    if (project == project.rootProject || project.path == featurePath) {
+        project.pluginManager.apply('jacoco')
+        project.extensions.getByType(JacocoPluginExtension).toolVersion = '0.8.14'
+    }
+}
+
+gradle.projectsEvaluated {
+    def featureProject = rootProject.project(featurePath)
+    def testTask = featureProject.tasks.named('test')
+    def classes = featureProject.fileTree(
+        "${featureProject.layout.buildDirectory.get()}/classes/kotlin/main",
+    )
+    def sources = featureProject.files("${featureProject.projectDir}/src/main/kotlin")
+    def execution = featureProject.file(
+        "${featureProject.layout.buildDirectory.get()}/jacoco/test.exec",
+    )
+
+    rootProject.tasks.register('w2a2JvmCoverageReport', JacocoReport) {
+        group = 'verification'
+        description = 'Generates the W2/A2 Vault feature JVM coverage report.'
+        dependsOn(testTask)
+        executionData(execution)
+        classDirectories.from(classes)
+        sourceDirectories.from(sources)
+        reports {
+            xml.required = true
+            xml.outputLocation = rootProject.layout.buildDirectory.file(
+                'reports/jacoco/w2a2JvmCoverage/w2a2JvmCoverage.xml',
+            )
+            html.required = true
+            html.outputLocation = rootProject.layout.buildDirectory.dir(
+                'reports/jacoco/w2a2JvmCoverage/html',
+            )
+            csv.required = false
+        }
+    }
+
+    rootProject.tasks.register('w2a2JvmCoverageVerification', JacocoCoverageVerification) {
+        group = 'verification'
+        description = 'Enforces W2/A2 Vault feature line and branch thresholds.'
+        dependsOn(testTask)
+        executionData(execution)
+        classDirectories.from(classes)
+        sourceDirectories.from(sources)
+        violationRules {
+            rule {
+                limit {
+                    counter = 'LINE'
+                    value = 'COVEREDRATIO'
+                    minimum = 0.90
+                }
+                limit {
+                    counter = 'BRANCH'
+                    value = 'COVEREDRATIO'
+                    minimum = 0.85
+                }
+            }
+        }
+    }
+}

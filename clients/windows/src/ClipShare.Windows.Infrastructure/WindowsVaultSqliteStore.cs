@@ -68,6 +68,22 @@ public sealed record EncryptedFileChunkRecord(
     string CiphertextSha256,
     string RelativePath);
 
+public sealed record EncryptedTombstoneRecord(
+    string EntityId,
+    string EntityKind,
+    string VersionId,
+    long KeyEpoch,
+    string EncryptedDeletedAt,
+    long PurgeAfterBucket);
+
+public sealed record EncryptedVaultMutation(
+    EncryptedFolderRecord? Folder,
+    EncryptedItemRecord? Item,
+    EncryptedVersionRecord Version,
+    EncryptedEventRecord Event,
+    EncryptedTombstoneRecord? Tombstone,
+    bool RemoveTombstone);
+
 public enum EventAppendResult
 {
     Inserted,
@@ -493,6 +509,390 @@ public sealed class WindowsVaultSqliteStore
         }
     }
 
+    public async Task<long> CurrentWriteEpochAsync(CancellationToken cancellationToken = default)
+    {
+        await using SqliteConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT current_write_epoch FROM vault_state WHERE singleton_id = 1;";
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return value is long epoch && epoch > 0
+            ? epoch
+            : throw new InvalidOperationException("Vault database has no valid write epoch.");
+    }
+
+    public async Task<long> HighestSourceSequenceAsync(
+        DeviceId sourceDeviceId,
+        CancellationToken cancellationToken = default)
+    {
+        await using SqliteConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT COALESCE(MAX(source_sequence), 0) FROM sync_events WHERE source_device_id = $deviceId;";
+        command.Parameters.AddWithValue("$deviceId", sourceDeviceId.Value);
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return value is long sequence && sequence >= 0
+            ? sequence
+            : throw new InvalidDataException("Vault event sequence is invalid.");
+    }
+
+    public async Task<IReadOnlyList<EncryptedFolderRecord>> ReadFoldersAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var records = new List<EncryptedFolderRecord>();
+        await using SqliteConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT folder_id, vault_id, parent_id, current_version_id, key_epoch, tombstone, encrypted_metadata
+            FROM folders
+            ORDER BY folder_id;
+            """;
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            records.Add(new EncryptedFolderRecord(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.GetString(3),
+                reader.GetInt64(4),
+                reader.GetInt64(5) != 0,
+                reader.GetString(6)));
+        }
+
+        return records;
+    }
+
+    public async Task<IReadOnlyList<EncryptedItemRecord>> ReadItemsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var records = new List<EncryptedItemRecord>();
+        await using SqliteConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT item_id, vault_id, folder_id, content_type, current_version_id, key_epoch,
+                   tombstone, encrypted_metadata, encrypted_payload
+            FROM items
+            ORDER BY item_id;
+            """;
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            records.Add(new EncryptedItemRecord(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetInt64(5),
+                reader.GetInt64(6) != 0,
+                reader.GetString(7),
+                reader.IsDBNull(8) ? null : reader.GetString(8)));
+        }
+
+        return records;
+    }
+
+    public async Task<EncryptedFileManifestRecord> ReadCommittedFileManifestAsync(
+        string itemId,
+        CancellationToken cancellationToken = default)
+    {
+        _ = VaultId.Parse(itemId);
+        await using SqliteConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT manifest_id, file_id, item_id, generation_id, key_epoch, chunk_size,
+                   chunk_count, encrypted_manifest, wrapped_file_key, committed
+            FROM encrypted_file_manifests
+            WHERE item_id = $itemId AND committed = 1;
+            """;
+        command.Parameters.AddWithValue("$itemId", itemId);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new FileNotFoundException("The Vault file manifest is missing.");
+        }
+
+        var result = new EncryptedFileManifestRecord(
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            reader.GetString(3),
+            reader.GetInt64(4),
+            reader.GetInt64(5),
+            reader.GetInt64(6),
+            reader.GetString(7),
+            reader.GetString(8),
+            reader.GetInt64(9) != 0);
+        if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidDataException("A Vault item has more than one committed file generation.");
+        }
+
+        return result;
+    }
+
+    public async Task<IReadOnlyList<EncryptedFileChunkRecord>> ReadFileChunksAsync(
+        string fileId,
+        string generationId,
+        CancellationToken cancellationToken = default)
+    {
+        _ = VaultId.Parse(fileId);
+        _ = VaultId.Parse(generationId);
+        var result = new List<EncryptedFileChunkRecord>();
+        await using SqliteConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT file_id, generation_id, chunk_index, nonce, ciphertext_bytes,
+                   ciphertext_sha256, relative_path
+            FROM encrypted_file_chunks
+            WHERE file_id = $fileId AND generation_id = $generationId
+            ORDER BY chunk_index;
+            """;
+        command.Parameters.AddWithValue("$fileId", fileId);
+        command.Parameters.AddWithValue("$generationId", generationId);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            result.Add(new EncryptedFileChunkRecord(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetInt64(2),
+                reader.GetString(3),
+                reader.GetInt64(4),
+                reader.GetString(5),
+                reader.GetString(6)));
+        }
+
+        return result;
+    }
+
+    public async Task ApplyMutationBatchAsync(
+        IReadOnlyList<EncryptedVaultMutation> mutations,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(mutations);
+        if (mutations.Count == 0)
+        {
+            throw new ArgumentException("At least one Vault mutation is required.", nameof(mutations));
+        }
+
+        await using SqliteConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using SqliteTransaction transaction = connection.BeginTransaction();
+        try
+        {
+            await EnsureDatabaseReadyAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            foreach (EncryptedVaultMutation mutation in mutations)
+            {
+                ValidateMutation(mutation);
+                EventAppendResult duplicate = await ExistingEventDispositionAsync(
+                    connection,
+                    transaction,
+                    mutation.Event,
+                    cancellationToken).ConfigureAwait(false);
+                if (duplicate == EventAppendResult.Duplicate)
+                {
+                    continue;
+                }
+
+                if (mutation.Folder is not null)
+                {
+                    await UpsertFolderAsync(connection, transaction, mutation.Folder, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await UpsertItemAsync(connection, transaction, mutation.Item!, cancellationToken).ConfigureAwait(false);
+                }
+
+                await InsertVersionAsync(connection, transaction, mutation.Version, cancellationToken).ConfigureAwait(false);
+                await InsertEventAsync(connection, transaction, mutation.Event, cancellationToken).ConfigureAwait(false);
+                if (mutation.Tombstone is not null)
+                {
+                    await UpsertTombstoneAsync(connection, transaction, mutation.Tombstone, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                else if (mutation.RemoveTombstone)
+                {
+                    await DeleteTombstoneAsync(connection, transaction, mutation.Event.EntityId, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    public async Task ApplyFileMutationAsync(
+        EncryptedVaultMutation mutation,
+        EncryptedFileManifestRecord manifest,
+        IReadOnlyList<EncryptedFileChunkRecord> chunks,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(mutation);
+        ArgumentNullException.ThrowIfNull(manifest);
+        ArgumentNullException.ThrowIfNull(chunks);
+        ValidateMutation(mutation);
+        if (mutation.Item is null || mutation.Item.ContentType != "FILE" ||
+            mutation.Item.ItemId != manifest.ItemId)
+        {
+            throw new ArgumentException("A file mutation must match its item manifest.", nameof(mutation));
+        }
+
+        ValidateFileGeneration(manifest, chunks);
+        await using SqliteConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using SqliteTransaction transaction = connection.BeginTransaction();
+        try
+        {
+            await EnsureDatabaseReadyAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            if (await ExistingEventDispositionAsync(connection, transaction, mutation.Event, cancellationToken)
+                .ConfigureAwait(false) == EventAppendResult.Duplicate)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            await UpsertItemAsync(connection, transaction, mutation.Item, cancellationToken).ConfigureAwait(false);
+            await InsertVersionAsync(connection, transaction, mutation.Version, cancellationToken).ConfigureAwait(false);
+            await InsertEventAsync(connection, transaction, mutation.Event, cancellationToken).ConfigureAwait(false);
+
+            await using (SqliteCommand manifestCommand = connection.CreateCommand())
+            {
+                manifestCommand.Transaction = transaction;
+                manifestCommand.CommandText =
+                    """
+                    INSERT INTO encrypted_file_manifests (
+                        manifest_id, file_id, item_id, generation_id, key_epoch,
+                        chunk_size, chunk_count, encrypted_manifest, wrapped_file_key, committed)
+                    VALUES ($manifestId, $fileId, $itemId, $generationId, $epoch,
+                            $chunkSize, $chunkCount, $manifest, $fileKey, 0);
+                    """;
+                manifestCommand.Parameters.AddWithValue("$manifestId", manifest.ManifestId);
+                manifestCommand.Parameters.AddWithValue("$fileId", manifest.FileId);
+                manifestCommand.Parameters.AddWithValue("$itemId", manifest.ItemId);
+                manifestCommand.Parameters.AddWithValue("$generationId", manifest.GenerationId);
+                manifestCommand.Parameters.AddWithValue("$epoch", manifest.KeyEpoch);
+                manifestCommand.Parameters.AddWithValue("$chunkSize", manifest.ChunkSize);
+                manifestCommand.Parameters.AddWithValue("$chunkCount", manifest.ChunkCount);
+                manifestCommand.Parameters.AddWithValue("$manifest", manifest.EncryptedManifest);
+                manifestCommand.Parameters.AddWithValue("$fileKey", manifest.WrappedFileKey);
+                _ = await manifestCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            foreach (EncryptedFileChunkRecord chunk in chunks)
+            {
+                await InsertFileChunkAsync(connection, transaction, chunk, cancellationToken).ConfigureAwait(false);
+            }
+
+            await using (SqliteCommand commitCommand = connection.CreateCommand())
+            {
+                commitCommand.Transaction = transaction;
+                commitCommand.CommandText =
+                    "UPDATE encrypted_file_manifests SET committed = 1 WHERE manifest_id = $manifestId AND committed = 0;";
+                commitCommand.Parameters.AddWithValue("$manifestId", manifest.ManifestId);
+                if (await commitCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+                {
+                    throw new InvalidOperationException("File manifest could not be committed.");
+                }
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    public async Task<IReadOnlyList<string>> PurgeEntitiesAsync(
+        IReadOnlyList<(string EntityKind, string EntityId)> entities,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(entities);
+        if (entities.Count == 0)
+        {
+            throw new ArgumentException("At least one entity is required.", nameof(entities));
+        }
+
+        var chunkPaths = new List<string>();
+        await using SqliteConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using SqliteTransaction transaction = connection.BeginTransaction();
+        try
+        {
+            await EnsureDatabaseReadyAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            foreach ((string entityKind, string entityId) in entities)
+            {
+                _ = VaultId.Parse(entityId);
+                if (entityKind == "ITEM")
+                {
+                    await using (SqliteCommand pathCommand = connection.CreateCommand())
+                    {
+                        pathCommand.Transaction = transaction;
+                        pathCommand.CommandText =
+                            """
+                            SELECT c.relative_path
+                            FROM encrypted_file_chunks c
+                            JOIN encrypted_file_manifests m
+                              ON m.file_id = c.file_id AND m.generation_id = c.generation_id
+                            WHERE m.item_id = $entityId;
+                            """;
+                        pathCommand.Parameters.AddWithValue("$entityId", entityId);
+                        await using SqliteDataReader reader = await pathCommand.ExecuteReaderAsync(cancellationToken)
+                            .ConfigureAwait(false);
+                        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                        {
+                            chunkPaths.Add(reader.GetString(0));
+                        }
+                    }
+
+                    await ExecuteParameterizedAsync(
+                        connection,
+                        transaction,
+                        "DELETE FROM encrypted_file_chunks WHERE (file_id, generation_id) IN " +
+                        "(SELECT file_id, generation_id FROM encrypted_file_manifests WHERE item_id = $entityId);",
+                        "$entityId",
+                        entityId,
+                        cancellationToken).ConfigureAwait(false);
+                    await ExecuteParameterizedAsync(connection, transaction, "DELETE FROM encrypted_file_manifests WHERE item_id = $entityId;", "$entityId", entityId, cancellationToken).ConfigureAwait(false);
+                    await ExecuteParameterizedAsync(connection, transaction, "DELETE FROM items WHERE item_id = $entityId AND tombstone = 1;", "$entityId", entityId, cancellationToken).ConfigureAwait(false);
+                }
+                else if (entityKind == "FOLDER")
+                {
+                    long dependants = await CountFolderDependantsAsync(connection, transaction, entityId, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (dependants != 0)
+                    {
+                        throw new InvalidOperationException("A folder must be empty before permanent deletion.");
+                    }
+
+                    await ExecuteParameterizedAsync(connection, transaction, "DELETE FROM folders WHERE folder_id = $entityId AND tombstone = 1;", "$entityId", entityId, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    throw new ArgumentException("Unknown Vault entity kind.", nameof(entities));
+                }
+
+                await ExecuteParameterizedAsync(connection, transaction, "DELETE FROM item_versions WHERE entity_id = $entityId;", "$entityId", entityId, cancellationToken).ConfigureAwait(false);
+                await ExecuteParameterizedAsync(connection, transaction, "DELETE FROM tombstones WHERE entity_id = $entityId;", "$entityId", entityId, cancellationToken).ConfigureAwait(false);
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return chunkPaths;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+    }
+
     public async Task CheckpointAsync(CancellationToken cancellationToken = default)
     {
         await using SqliteConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -514,6 +914,209 @@ public sealed class WindowsVaultSqliteStore
             await connection.DisposeAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    private static void ValidateMutation(EncryptedVaultMutation mutation)
+    {
+        ArgumentNullException.ThrowIfNull(mutation);
+        if ((mutation.Folder is null) == (mutation.Item is null))
+        {
+            throw new ArgumentException("A mutation must contain exactly one entity.", nameof(mutation));
+        }
+
+        if (mutation.Folder is not null)
+        {
+            ValidateFolderTuple(mutation.Folder, mutation.Version, mutation.Event);
+        }
+        else
+        {
+            ValidateItemTuple(mutation.Item!, mutation.Version, mutation.Event);
+        }
+
+        if (mutation.Tombstone is not null && mutation.RemoveTombstone)
+        {
+            throw new ArgumentException("A mutation cannot add and remove a tombstone together.", nameof(mutation));
+        }
+
+        if (mutation.Tombstone is not null &&
+            (mutation.Tombstone.EntityId != mutation.Event.EntityId ||
+             mutation.Tombstone.VersionId != mutation.Version.VersionId ||
+             mutation.Tombstone.KeyEpoch != mutation.Version.KeyEpoch))
+        {
+            throw new ArgumentException("A tombstone must match its entity mutation.", nameof(mutation));
+        }
+    }
+
+    private static async Task UpsertFolderAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        EncryptedFolderRecord folder,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            INSERT INTO folders (
+                folder_id, vault_id, parent_id, current_version_id,
+                key_epoch, tombstone, encrypted_metadata)
+            VALUES ($folderId, $vaultId, $parentId, $versionId, $epoch, $tombstone, $metadata)
+            ON CONFLICT(folder_id) DO UPDATE SET
+                parent_id = excluded.parent_id,
+                current_version_id = excluded.current_version_id,
+                key_epoch = excluded.key_epoch,
+                tombstone = excluded.tombstone,
+                encrypted_metadata = excluded.encrypted_metadata
+            WHERE folders.vault_id = excluded.vault_id;
+            """;
+        BindFolder(command, folder);
+        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+        {
+            throw new InvalidDataException("Folder mutation did not update exactly one row.");
+        }
+    }
+
+    private static async Task UpsertItemAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        EncryptedItemRecord item,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            INSERT INTO items (
+                item_id, vault_id, folder_id, content_type, current_version_id,
+                key_epoch, tombstone, encrypted_metadata, encrypted_payload)
+            VALUES ($itemId, $vaultId, $folderId, $contentType, $versionId,
+                    $epoch, $tombstone, $metadata, $payload)
+            ON CONFLICT(item_id) DO UPDATE SET
+                folder_id = excluded.folder_id,
+                content_type = excluded.content_type,
+                current_version_id = excluded.current_version_id,
+                key_epoch = excluded.key_epoch,
+                tombstone = excluded.tombstone,
+                encrypted_metadata = excluded.encrypted_metadata,
+                encrypted_payload = excluded.encrypted_payload
+            WHERE items.vault_id = excluded.vault_id;
+            """;
+        BindItem(command, item);
+        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+        {
+            throw new InvalidDataException("Item mutation did not update exactly one row.");
+        }
+    }
+
+    private static async Task UpsertTombstoneAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        EncryptedTombstoneRecord tombstone,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            INSERT INTO tombstones (
+                entity_id, entity_kind, version_id, key_epoch, encrypted_deleted_at, purge_after_bucket)
+            VALUES ($entityId, $entityKind, $versionId, $epoch, $deletedAt, $purgeAfter)
+            ON CONFLICT(entity_id) DO UPDATE SET
+                entity_kind = excluded.entity_kind,
+                version_id = excluded.version_id,
+                key_epoch = excluded.key_epoch,
+                encrypted_deleted_at = excluded.encrypted_deleted_at,
+                purge_after_bucket = excluded.purge_after_bucket;
+            """;
+        command.Parameters.AddWithValue("$entityId", tombstone.EntityId);
+        command.Parameters.AddWithValue("$entityKind", tombstone.EntityKind);
+        command.Parameters.AddWithValue("$versionId", tombstone.VersionId);
+        command.Parameters.AddWithValue("$epoch", tombstone.KeyEpoch);
+        command.Parameters.AddWithValue("$deletedAt", tombstone.EncryptedDeletedAt);
+        command.Parameters.AddWithValue("$purgeAfter", tombstone.PurgeAfterBucket);
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task DeleteTombstoneAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string entityId,
+        CancellationToken cancellationToken) =>
+        await ExecuteParameterizedAsync(
+            connection,
+            transaction,
+            "DELETE FROM tombstones WHERE entity_id = $entityId;",
+            "$entityId",
+            entityId,
+            cancellationToken).ConfigureAwait(false);
+
+    private static async Task<long> CountFolderDependantsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string folderId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            "SELECT (SELECT COUNT(*) FROM folders WHERE parent_id = $folderId) + " +
+            "(SELECT COUNT(*) FROM items WHERE folder_id = $folderId);";
+        command.Parameters.AddWithValue("$folderId", folderId);
+        return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? 0L);
+    }
+
+    private static async Task ExecuteParameterizedAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sql,
+        string parameterName,
+        string value,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        command.Parameters.AddWithValue(parameterName, value);
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task EnsureDatabaseReadyAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT initialization_state FROM vault_state WHERE singleton_id = 1;";
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        if (value is not string state || state != "READY")
+        {
+            throw new InvalidOperationException("Vault mutations require a READY database.");
+        }
+    }
+
+    private static void BindFolder(SqliteCommand command, EncryptedFolderRecord folder)
+    {
+        command.Parameters.AddWithValue("$folderId", folder.FolderId);
+        command.Parameters.AddWithValue("$vaultId", folder.VaultId);
+        command.Parameters.AddWithValue("$parentId", (object?)folder.ParentId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$versionId", folder.CurrentVersionId);
+        command.Parameters.AddWithValue("$epoch", folder.KeyEpoch);
+        command.Parameters.AddWithValue("$tombstone", folder.Tombstone ? 1 : 0);
+        command.Parameters.AddWithValue("$metadata", folder.EncryptedMetadata);
+    }
+
+    private static void BindItem(SqliteCommand command, EncryptedItemRecord item)
+    {
+        command.Parameters.AddWithValue("$itemId", item.ItemId);
+        command.Parameters.AddWithValue("$vaultId", item.VaultId);
+        command.Parameters.AddWithValue("$folderId", item.FolderId);
+        command.Parameters.AddWithValue("$contentType", item.ContentType);
+        command.Parameters.AddWithValue("$versionId", item.CurrentVersionId);
+        command.Parameters.AddWithValue("$epoch", item.KeyEpoch);
+        command.Parameters.AddWithValue("$tombstone", item.Tombstone ? 1 : 0);
+        command.Parameters.AddWithValue("$metadata", item.EncryptedMetadata);
+        command.Parameters.AddWithValue("$payload", (object?)item.EncryptedPayload ?? DBNull.Value);
     }
 
     private static async Task<EventAppendResult> ExistingEventDispositionAsync(

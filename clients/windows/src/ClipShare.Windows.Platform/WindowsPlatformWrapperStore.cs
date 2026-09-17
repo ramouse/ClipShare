@@ -80,6 +80,43 @@ public sealed class WindowsPlatformWrapperStore
             wrapper.State == "STAGED" ? InitializationPhase.Staged : InitializationPhase.Ready);
     }
 
+    public async Task<WindowsPlatformWrapper?> ReadSingleAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (!Directory.Exists(directory))
+        {
+            return null;
+        }
+
+        string[] candidates = Directory.EnumerateFiles(directory, "*.wrapper.json", SearchOption.TopDirectoryOnly)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        if (candidates.Length == 0)
+        {
+            return null;
+        }
+
+        if (candidates.Length != 1)
+        {
+            throw new InvalidDataException("Wrapper discovery requires exactly one local Vault epoch.");
+        }
+
+        await using FileStream stream = new(
+            candidates[0],
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            16_384,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        WindowsPlatformWrapper wrapper = await JsonSerializer.DeserializeAsync<WindowsPlatformWrapper>(
+            stream,
+            JsonOptions,
+            cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("Platform wrapper is empty.");
+        Validate(wrapper);
+        return wrapper;
+    }
+
     public async Task WriteAtomicallyAsync(
         WindowsPlatformWrapper wrapper,
         CancellationToken cancellationToken = default)

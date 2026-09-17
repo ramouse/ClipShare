@@ -23,6 +23,11 @@ class AndroidSettingsRepositoryTest {
             settings = repository.settings.first()
             assertTrue(settings.monitorClipboard)
             assertTrue(settings.autoSyncPairedDevices)
+
+            repository.setMonitorClipboard(false)
+            settings = repository.settings.first()
+            assertFalse(settings.monitorClipboard)
+            assertTrue(settings.autoSyncPairedDevices)
         } finally {
             repository.setMonitorClipboard(false)
             repository.setAutoSyncPairedDevices(false)

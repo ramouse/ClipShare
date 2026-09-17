@@ -132,6 +132,33 @@ public sealed class WindowsEncryptedBlobStore
         return result;
     }
 
+    public void DeleteCommittedChunks(IEnumerable<string> relativePaths)
+    {
+        ArgumentNullException.ThrowIfNull(relativePaths);
+        foreach (string relativePath in relativePaths.Distinct(StringComparer.Ordinal))
+        {
+            string path = ResolveRelative(relativePath);
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+
+            string? generationDirectory = Path.GetDirectoryName(path);
+            if (generationDirectory is not null && Directory.Exists(generationDirectory) &&
+                !Directory.EnumerateFileSystemEntries(generationDirectory).Any())
+            {
+                Directory.Delete(generationDirectory);
+            }
+
+            string? fileDirectory = generationDirectory is null ? null : Path.GetDirectoryName(generationDirectory);
+            if (fileDirectory is not null && Directory.Exists(fileDirectory) &&
+                !Directory.EnumerateFileSystemEntries(fileDirectory).Any())
+            {
+                Directory.Delete(fileDirectory);
+            }
+        }
+    }
+
     private string ResolveRelative(string relative)
     {
         if (Path.IsPathRooted(relative))

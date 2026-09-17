@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import androidx.room.Upsert
 import com.clipshare.core.crypto.NonceAllocation
 
 @Dao
@@ -27,6 +28,12 @@ abstract class VaultRoomDao {
 
     @Query("SELECT COUNT(*) FROM items")
     abstract suspend fun itemCount(): Long
+
+    @Query("SELECT currentWriteEpoch FROM vault_state WHERE singletonId = 1")
+    abstract suspend fun currentWriteEpoch(): Long?
+
+    @Query("SELECT COALESCE(MAX(sourceSequence), 0) FROM sync_events WHERE sourceDeviceId = :sourceDeviceId")
+    abstract suspend fun highestSourceSequence(sourceDeviceId: String): Long
 
     @Query(
         """
@@ -107,6 +114,18 @@ abstract class VaultRoomDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract suspend fun insertEvent(event: SyncEventEntity)
 
+    @Upsert
+    protected abstract suspend fun upsertFolder(folder: FolderEntity)
+
+    @Upsert
+    protected abstract suspend fun upsertItem(item: ItemEntity)
+
+    @Upsert
+    protected abstract suspend fun upsertTombstone(tombstone: TombstoneEntity)
+
+    @Query("DELETE FROM tombstones WHERE entityId = :entityId")
+    protected abstract suspend fun deleteTombstone(entityId: String)
+
     @Query(
         """
         SELECT * FROM sync_events
@@ -122,7 +141,7 @@ abstract class VaultRoomDao {
     ): SyncEventEntity?
 
     @Query("SELECT MAX(sourceSequence) FROM sync_events WHERE sourceDeviceId = :sourceDeviceId")
-    protected abstract suspend fun highestSourceSequence(sourceDeviceId: String): Long?
+    protected abstract suspend fun previousHighestSourceSequence(sourceDeviceId: String): Long?
 
     @Transaction
     open suspend fun populateDefaultFolders(defaults: List<VaultDefaultFolderSeed>) {
@@ -165,10 +184,47 @@ abstract class VaultRoomDao {
         return true
     }
 
+    @Transaction
+    open suspend fun applyMutations(mutations: List<AndroidEncryptedVaultMutation>) {
+        require(mutations.isNotEmpty()) { "At least one Vault mutation is required." }
+        check(vaultState()?.initializationState == "READY") { "Vault mutations require a READY database." }
+        mutations.forEach { mutation ->
+            validateMutation(mutation)
+            if (isDuplicateOrThrow(mutation.event)) return@forEach
+            mutation.folder?.let { upsertFolder(it) } ?: upsertItem(checkNotNull(mutation.item))
+            insertVersion(mutation.version)
+            insertEvent(mutation.event)
+            mutation.tombstone?.let { upsertTombstone(it) }
+                ?: if (mutation.removeTombstone) deleteTombstone(mutation.event.entityId) else Unit
+        }
+    }
+
+    @Transaction
+    open suspend fun applyFileMutation(
+        mutation: AndroidEncryptedVaultMutation,
+        manifest: FileManifestEntity,
+        chunks: List<FileChunkEntity>,
+    ) {
+        validateMutation(mutation)
+        val item = checkNotNull(mutation.item) { "A file mutation requires an item." }
+        require(item.contentType == "FILE" && item.itemId == manifest.itemId) {
+            "A file mutation must match its item manifest."
+        }
+        validateFileGeneration(manifest, chunks)
+        check(vaultState()?.initializationState == "READY") { "Vault mutations require a READY database." }
+        if (isDuplicateOrThrow(mutation.event)) return
+        upsertItem(item)
+        insertVersion(mutation.version)
+        insertEvent(mutation.event)
+        insertFileManifest(manifest)
+        insertFileChunks(chunks)
+        check(markManifestCommitted(manifest.manifestId) == 1) { "File manifest could not be committed." }
+    }
+
     private suspend fun isDuplicateOrThrow(event: SyncEventEntity): Boolean {
         val existing = existingEvent(event.eventId, event.sourceDeviceId, event.sourceSequence)
         if (existing == null) {
-            val highest = highestSourceSequence(event.sourceDeviceId)
+            val highest = previousHighestSourceSequence(event.sourceDeviceId)
             check(highest == null || event.sourceSequence > highest) {
                 "An older source sequence cannot be appended after a newer event."
             }
@@ -186,6 +242,15 @@ abstract class VaultRoomDao {
     @Query("SELECT * FROM items ORDER BY itemId")
     abstract suspend fun items(): List<ItemEntity>
 
+    @Query("SELECT * FROM encrypted_file_manifests WHERE itemId = :itemId AND committed = 1")
+    abstract suspend fun committedFileManifests(itemId: String): List<FileManifestEntity>
+
+    @Query(
+        "SELECT * FROM encrypted_file_chunks WHERE fileId = :fileId AND generationId = :generationId " +
+            "ORDER BY chunkIndex",
+    )
+    abstract suspend fun fileChunks(fileId: String, generationId: String): List<FileChunkEntity>
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     abstract suspend fun insertFileManifest(manifest: FileManifestEntity)
 
@@ -197,6 +262,13 @@ abstract class VaultRoomDao {
 
     @Transaction
     open suspend fun commitFileGeneration(manifest: FileManifestEntity, chunks: List<FileChunkEntity>) {
+        validateFileGeneration(manifest, chunks)
+        insertFileManifest(manifest)
+        insertFileChunks(chunks)
+        check(markManifestCommitted(manifest.manifestId) == 1) { "File manifest could not be committed." }
+    }
+
+    private fun validateFileGeneration(manifest: FileManifestEntity, chunks: List<FileChunkEntity>) {
         require(!manifest.committed) { "A file manifest must enter the transaction uncommitted." }
         require(
             listOf(manifest.manifestId, manifest.fileId, manifest.itemId, manifest.generationId)
@@ -223,9 +295,88 @@ abstract class VaultRoomDao {
         }) {
             "File chunks must match the manifest, be complete, ordered, and structurally valid."
         }
-        insertFileManifest(manifest)
-        insertFileChunks(chunks)
-        check(markManifestCommitted(manifest.manifestId) == 1) { "File manifest could not be committed." }
+    }
+
+    @Query(
+        """
+        SELECT c.relativePath FROM encrypted_file_chunks c
+        JOIN encrypted_file_manifests m
+          ON m.fileId = c.fileId AND m.generationId = c.generationId
+        WHERE m.itemId = :itemId
+        """,
+    )
+    protected abstract suspend fun fileChunkPaths(itemId: String): List<String>
+
+    @Query(
+        """
+        DELETE FROM encrypted_file_chunks
+        WHERE (fileId, generationId) IN (
+            SELECT fileId, generationId FROM encrypted_file_manifests WHERE itemId = :itemId
+        )
+        """,
+    )
+    protected abstract suspend fun deleteFileChunks(itemId: String)
+
+    @Query("DELETE FROM encrypted_file_manifests WHERE itemId = :itemId")
+    protected abstract suspend fun deleteFileManifests(itemId: String)
+
+    @Query("DELETE FROM items WHERE itemId = :itemId AND tombstone = 1")
+    protected abstract suspend fun deleteTrashedItem(itemId: String): Int
+
+    @Query("DELETE FROM folders WHERE folderId = :folderId AND tombstone = 1")
+    protected abstract suspend fun deleteTrashedFolder(folderId: String): Int
+
+    @Query("DELETE FROM item_versions WHERE entityId = :entityId")
+    protected abstract suspend fun deleteVersions(entityId: String)
+
+    @Query(
+        "SELECT (SELECT COUNT(*) FROM folders WHERE parentId = :folderId) + " +
+            "(SELECT COUNT(*) FROM items WHERE folderId = :folderId)",
+    )
+    protected abstract suspend fun folderDependantCount(folderId: String): Long
+
+    @Transaction
+    open suspend fun purgeEntities(entities: List<Pair<String, String>>): List<String> {
+        require(entities.isNotEmpty()) { "At least one entity is required." }
+        check(vaultState()?.initializationState == "READY") { "Vault mutations require a READY database." }
+        val paths = mutableListOf<String>()
+        entities.forEach { (kind, id) ->
+            require(LOWERCASE_UUID.matches(id)) { "Invalid Vault entity ID." }
+            when (kind) {
+                "ITEM" -> {
+                    paths += fileChunkPaths(id)
+                    deleteFileChunks(id)
+                    deleteFileManifests(id)
+                    check(deleteTrashedItem(id) == 1) { "Only a trashed item can be permanently deleted." }
+                }
+                "FOLDER" -> {
+                    check(folderDependantCount(id) == 0L) { "A folder must be empty before permanent deletion." }
+                    check(deleteTrashedFolder(id) == 1) { "Only a trashed folder can be permanently deleted." }
+                }
+                else -> error("Unknown Vault entity kind.")
+            }
+            deleteVersions(id)
+            deleteTombstone(id)
+        }
+        return paths
+    }
+
+    private fun validateMutation(mutation: AndroidEncryptedVaultMutation) {
+        require((mutation.folder == null) xor (mutation.item == null)) {
+            "A mutation must contain exactly one entity."
+        }
+        mutation.folder?.let { validateFolderTuple(it, mutation.version, mutation.event) }
+            ?: validateItemTuple(checkNotNull(mutation.item), mutation.version, mutation.event)
+        require(mutation.tombstone == null || !mutation.removeTombstone) {
+            "A mutation cannot add and remove a tombstone together."
+        }
+        mutation.tombstone?.let {
+            require(
+                it.entityId == mutation.event.entityId &&
+                    it.versionId == mutation.version.versionId &&
+                    it.keyEpoch == mutation.version.keyEpoch,
+            ) { "A tombstone must match its entity mutation." }
+        }
     }
 
     private fun validateFolderTuple(
@@ -267,6 +418,15 @@ data class VaultDefaultFolderSeed(
     val folder: FolderEntity,
     val version: ItemVersionEntity,
     val event: SyncEventEntity,
+)
+
+data class AndroidEncryptedVaultMutation(
+    val folder: FolderEntity?,
+    val item: ItemEntity?,
+    val version: ItemVersionEntity,
+    val event: SyncEventEntity,
+    val tombstone: TombstoneEntity?,
+    val removeTombstone: Boolean,
 )
 
 private const val NONCE_PREFIX_BYTES = 4

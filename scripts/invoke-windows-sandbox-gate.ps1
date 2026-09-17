@@ -5,14 +5,19 @@ param(
     [Parameter(Mandatory = $true)][string]$OfflineToolchainRoot,
     [Parameter(Mandatory = $true)][string]$EnvironmentAttestation,
     [switch]$VerifyPackageLifecycle,
-    [switch]$VerifyC2Vault
+    [switch]$VerifyC2Vault,
+    [switch]$VerifyW2Vault,
+    [switch]$PrepareW2AppLock
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-if ($VerifyPackageLifecycle -and $VerifyC2Vault) {
-    throw "C2 Vault verification and the W1 package lifecycle gate must run separately."
+if ($VerifyC2Vault -and ($VerifyPackageLifecycle -or $VerifyW2Vault -or $PrepareW2AppLock)) {
+    throw "C2 Vault verification must run separately."
+}
+if ($PrepareW2AppLock -and ($VerifyPackageLifecycle -or $VerifyW2Vault)) {
+    throw "W2 App lock preparation must run separately."
 }
 
 $dotnetRoot = [IO.Path]::GetFullPath((Join-Path $OfflineToolchainRoot "dotnet"))
@@ -45,6 +50,12 @@ if ($VerifyPackageLifecycle) {
 }
 if ($VerifyC2Vault) {
     $arguments += "-VerifyC2Vault"
+}
+if ($VerifyW2Vault) {
+    $arguments += "-VerifyW2Vault"
+}
+if ($PrepareW2AppLock) {
+    $arguments += "-PrepareW2AppLock"
 }
 
 & powershell.exe @arguments

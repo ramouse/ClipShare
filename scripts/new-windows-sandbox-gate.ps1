@@ -5,14 +5,22 @@ param(
     [Parameter(Mandatory = $true)][string]$OfflineToolchainRoot,
     [switch]$VerifyPackageLifecycle,
     [switch]$VerifyC2Vault,
+    [switch]$VerifyW2Vault,
+    [switch]$PrepareW2AppLock,
     [switch]$Launch
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-if ($VerifyPackageLifecycle -and $VerifyC2Vault) {
-    throw "C2 Vault verification and the W1 package lifecycle gate must run separately."
+if ($VerifyC2Vault -and ($VerifyPackageLifecycle -or $VerifyW2Vault -or $PrepareW2AppLock)) {
+    throw "C2 Vault verification must run separately."
+}
+if ($PrepareW2AppLock -and ($VerifyPackageLifecycle -or $VerifyW2Vault)) {
+    throw "W2 App lock preparation must run separately."
+}
+if ($VerifyW2Vault -and -not $VerifyPackageLifecycle) {
+    throw "W2 Vault verification requires the package lifecycle gate."
 }
 
 function Get-ExistingDirectory {
@@ -42,7 +50,18 @@ if (-not [IO.File]::Exists((Join-Path $tools "dotnet/dotnet.exe")) `
 
 $evidenceBase = [IO.Path]::GetFullPath($EvidenceRoot).TrimEnd('\')
 [IO.Directory]::CreateDirectory($evidenceBase) | Out-Null
-$runPrefix = if ($VerifyC2Vault) { "c2-wsb-launch" } else { "w1-wsb-launch" }
+$runPrefix = if ($PrepareW2AppLock) {
+    "w2-lock-wsb-launch"
+}
+elseif ($VerifyW2Vault) {
+    "w2-wsb-launch"
+}
+elseif ($VerifyC2Vault) {
+    "c2-wsb-launch"
+}
+else {
+    "w1-wsb-launch"
+}
 $runId = "{0}-{1}-{2}" -f `
     $runPrefix, `
     [DateTimeOffset]::UtcNow.ToString("yyyyMMddTHHmmssfffZ"), `
@@ -52,7 +71,9 @@ $runRoot = Join-Path $evidenceBase $runId
 
 $lifecycleArgument = if ($VerifyPackageLifecycle) { " -VerifyPackageLifecycle" } else { "" }
 $c2VaultArgument = if ($VerifyC2Vault) { " -VerifyC2Vault" } else { "" }
-$bootstrapCommand = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\ClipShareSource\scripts\invoke-windows-sandbox-gate.ps1 -SourceRoot C:\ClipShareSource -EvidenceRoot C:\ClipShareEvidence -OfflineToolchainRoot C:\ClipShareTools -EnvironmentAttestation C:\ClipShareEvidence\environment-attestation.json$lifecycleArgument$c2VaultArgument"
+$w2VaultArgument = if ($VerifyW2Vault) { " -VerifyW2Vault" } else { "" }
+$w2LockArgument = if ($PrepareW2AppLock) { " -PrepareW2AppLock" } else { "" }
+$bootstrapCommand = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\ClipShareSource\scripts\invoke-windows-sandbox-gate.ps1 -SourceRoot C:\ClipShareSource -EvidenceRoot C:\ClipShareEvidence -OfflineToolchainRoot C:\ClipShareTools -EnvironmentAttestation C:\ClipShareEvidence\environment-attestation.json$lifecycleArgument$c2VaultArgument$w2VaultArgument$w2LockArgument"
 $wsb = @"
 <Configuration>
   <Networking>Disable</Networking>
@@ -103,6 +124,8 @@ $attestation = [ordered]@{
     wsbConfigSha256 = $wsbSha256
     lifecycleRequested = [bool]$VerifyPackageLifecycle
     c2VaultRequested = [bool]$VerifyC2Vault
+    w2VaultRequested = [bool]$VerifyW2Vault
+    w2LockPreparationRequested = [bool]$PrepareW2AppLock
     generatedAtUtc = [DateTimeOffset]::UtcNow.ToString("O")
 }
 $attestationPath = Join-Path $runRoot "environment-attestation.json"

@@ -34,6 +34,7 @@ private data class AndroidNonceReservation(
     val owner: String,
 )
 
+@Suppress("TooManyFunctions")
 class AndroidPlatformWrapperStore(private val directory: File) {
     private val json = Json { encodeDefaults = true; ignoreUnknownKeys = false }
 
@@ -51,6 +52,18 @@ class AndroidPlatformWrapperStore(private val directory: File) {
             digest = digest(wrapper),
             phase = InitializationPhase.valueOf(wrapper.state),
         )
+    }
+
+    @Suppress("ReturnCount")
+    fun readSingle(): AndroidPlatformWrapper? {
+        if (!directory.exists()) return null
+        val candidates = directory.listFiles { file -> file.name.endsWith(".wrapper.json") }
+            .orEmpty()
+            .sortedBy(File::getName)
+        if (candidates.isEmpty()) return null
+        check(candidates.size == 1) { "Wrapper discovery requires exactly one local Vault epoch." }
+        return json.decodeFromString<AndroidPlatformWrapper>(candidates.single().readText(Charsets.UTF_8))
+            .also(::validate)
     }
 
     fun writeAtomically(wrapper: AndroidPlatformWrapper) {

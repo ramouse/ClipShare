@@ -9,11 +9,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -31,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -48,9 +51,22 @@ import com.clipshare.feature.receive.ReceiveUiState
 import com.clipshare.feature.send.SendController
 import com.clipshare.feature.send.SendUiState
 import com.clipshare.feature.settings.SettingsController
+import com.clipshare.feature.vault.CreateVaultFolderCommand
+import com.clipshare.feature.vault.UpdateVaultTextCommand
+import com.clipshare.feature.vault.RenameVaultFolderCommand
+import com.clipshare.feature.vault.VaultController
+import com.clipshare.feature.vault.VaultEntityKind
+import com.clipshare.feature.vault.VaultEntitySelection
+import com.clipshare.feature.vault.VaultFeatureState
+import com.clipshare.feature.vault.VaultItemView
+import com.clipshare.feature.vault.VaultPolicyCommand
+import com.clipshare.feature.vault.VaultSection
+import com.clipshare.core.vault.SyncPolicy
+import com.clipshare.core.vault.VaultContentType
 import kotlinx.coroutines.launch
 
 private enum class Screen(val title: String) {
+    VAULT("内容库"),
     SEND("发送"),
     RECEIVE("接收"),
     SETTINGS("设置"),
@@ -59,27 +75,31 @@ private enum class Screen(val title: String) {
 private const val SINGLE_VIEW_CHOICE = 1
 private const val FIVE_VIEW_CHOICE = 5
 
-@Suppress("FunctionNaming")
+@Suppress("FunctionNaming", "LongMethod")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ClipShareApp(
     sendController: SendController,
     receiveController: ReceiveController,
     settingsController: SettingsController,
+    vaultController: VaultController,
     defaultBaseUrl: String,
     onPickFile: () -> Unit,
     onCreateDownload: (String) -> Unit,
+    onImportVaultFile: (String, String) -> Unit,
+    onExportVaultFile: (String, String) -> Unit,
 ) {
     val sendState by sendController.state.collectAsStateWithLifecycle()
     val receiveState by receiveController.state.collectAsStateWithLifecycle()
     val settings by settingsController.settings.collectAsStateWithLifecycle(ClientSettings())
-    var screen by rememberSaveable { mutableStateOf(Screen.SEND) }
+    val vaultState by vaultController.state.collectAsStateWithLifecycle()
+    var screen by rememberSaveable { mutableStateOf(Screen.VAULT) }
     val coroutineScope = rememberCoroutineScope()
 
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             Scaffold(
-                topBar = { TopAppBar(title = { Text("ClipShare v0.3-A1") }) },
+                topBar = { TopAppBar(title = { Text("ClipShare v0.3-W2/A2") }) },
             ) { padding ->
                 Column(modifier = Modifier.padding(padding)) {
                     PrimaryTabRow(selectedTabIndex = screen.ordinal) {
@@ -92,6 +112,13 @@ fun ClipShareApp(
                         }
                     }
                     when (screen) {
+                        Screen.VAULT -> VaultScreen(
+                            state = vaultState,
+                            controller = vaultController,
+                            onImportFile = onImportVaultFile,
+                            onExportFile = onExportVaultFile,
+                        )
+
                         Screen.SEND -> SendScreen(
                             state = sendState,
                             onDraftChanged = sendController::updateDraft,
@@ -133,6 +160,266 @@ fun ClipShareApp(
     }
 }
 
+@Suppress("FunctionNaming", "LongMethod", "CyclomaticComplexMethod")
+@Composable
+private fun VaultScreen(
+    state: VaultFeatureState,
+    controller: VaultController,
+    onImportFile: (String, String) -> Unit,
+    onExportFile: (String, String) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val runVault: (suspend () -> Unit) -> Unit = { action ->
+        scope.launch { runCatching { action() } }
+    }
+    var search by remember(state.sensitiveGeneration) { mutableStateOf("") }
+    var folderName by remember(state.sensitiveGeneration) { mutableStateOf("") }
+    var selectedFolderId by remember { mutableStateOf<String?>(null) }
+    val activeFolders = state.snapshot.folders.filterNot { it.deleted }
+    LaunchedEffect(activeFolders.map { it.id }) {
+        if (selectedFolderId !in activeFolders.map { it.id }) selectedFolderId = activeFolders.firstOrNull()?.id
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text("本地加密内容库", style = MaterialTheme.typography.titleMedium)
+        Text("内容使用 Room 密文记录、Keystore 平台包装和加密文件 blob；“密码”与其他文件夹完全相同。")
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            VaultSection.entries.forEach { section ->
+                FilterChip(
+                    selected = state.section == section,
+                    onClick = { runVault { controller.navigate(section, search) } },
+                    label = { Text(section.label()) },
+                )
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = search,
+                onValueChange = { search = it },
+                label = { Text("搜索（仅内存）") },
+                modifier = Modifier.weight(1f).testTag("vault_search"),
+                singleLine = true,
+            )
+            Button(
+                onClick = { runVault { controller.navigate(state.section, search) } },
+                enabled = !state.busy,
+            ) { Text("搜索") }
+        }
+        HorizontalDivider()
+        Text("新建普通文件夹", style = MaterialTheme.typography.titleMedium)
+        OutlinedTextField(
+            value = folderName,
+            onValueChange = { folderName = it },
+            label = { Text("文件夹名称") },
+            modifier = Modifier.fillMaxWidth().testTag("vault_folder_name"),
+            singleLine = true,
+        )
+        Text("父文件夹：${activeFolders.firstOrNull { it.id == selectedFolderId }?.name ?: "顶层"}")
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilterChip(
+                selected = selectedFolderId == null,
+                onClick = { selectedFolderId = null },
+                label = { Text("顶层") },
+            )
+            activeFolders.forEach { folder ->
+                FilterChip(
+                    selected = selectedFolderId == folder.id,
+                    onClick = { selectedFolderId = folder.id },
+                    label = { Text(folder.name) },
+                )
+            }
+        }
+        Button(
+            onClick = {
+                runVault {
+                    controller.createFolder(CreateVaultFolderCommand(folderName, selectedFolderId))
+                    folderName = ""
+                }
+            },
+            enabled = !state.busy && folderName.isNotBlank(),
+        ) { Text("创建文件夹") }
+        val selectedFolder = state.snapshot.folders.singleOrNull { folder ->
+            VaultEntitySelection(VaultEntityKind.FOLDER, folder.id) in state.selection
+        }
+        Button(
+            onClick = {
+                selectedFolder?.let { folder ->
+                    runVault { controller.renameFolder(RenameVaultFolderCommand(folder.id, folderName)) }
+                }
+            },
+            enabled = !state.busy && selectedFolder != null && folderName.isNotBlank(),
+        ) { Text("重命名所选文件夹") }
+        HorizontalDivider()
+        Text("显式保存", style = MaterialTheme.typography.titleMedium)
+        Text("剪贴板监测和系统分享只填入候选；必须点击保存才进入 Vault。")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(VaultContentType.TEXT, VaultContentType.URL).forEach { type ->
+                FilterChip(
+                    selected = state.draftContentType == type,
+                    onClick = { controller.updateDraft(state.draftTitle, state.draftText, type) },
+                    label = { Text(if (type == VaultContentType.TEXT) "文本" else "URL") },
+                )
+            }
+        }
+        OutlinedTextField(
+            value = state.draftTitle,
+            onValueChange = { controller.updateDraft(it, state.draftText, state.draftContentType) },
+            label = { Text("标题") },
+            modifier = Modifier.fillMaxWidth().testTag("vault_title"),
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = state.draftText,
+            onValueChange = { controller.updateDraft(state.draftTitle, it, state.draftContentType) },
+            label = { Text("正文或 HTTP(S) URL") },
+            modifier = Modifier.fillMaxWidth().testTag("vault_body"),
+            minLines = 4,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    selectedFolderId?.let { folder -> runVault { controller.saveDraft(folder) } }
+                },
+                enabled = !state.busy && selectedFolderId != null && state.draftText.isNotEmpty(),
+            ) { Text("加密保存") }
+            TextButton(
+                onClick = {
+                    selectedFolderId?.let { folder ->
+                        onImportFile(folder, state.draftTitle.ifBlank { "导入文件" })
+                    }
+                },
+                enabled = !state.busy && selectedFolderId != null,
+            ) { Text("导入文件…") }
+        }
+        HorizontalDivider()
+        Text("文件夹与条目", style = MaterialTheme.typography.titleMedium)
+        state.snapshot.folders.forEach { folder ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val entity = VaultEntitySelection(VaultEntityKind.FOLDER, folder.id)
+                Checkbox(
+                    checked = entity in state.selection,
+                    onCheckedChange = { controller.setSelected(entity, it) },
+                )
+                Text("文件夹 · ${folder.name} · ${folder.effectivePolicy.label()}")
+            }
+        }
+        state.snapshot.items.forEach { item ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val entity = VaultEntitySelection(VaultEntityKind.ITEM, item.id)
+                Checkbox(
+                    checked = entity in state.selection,
+                    onCheckedChange = { controller.setSelected(entity, it) },
+                )
+                Text("${item.contentType.label()} · ${item.title} · ${item.effectivePolicy.label()}")
+                if (item.contentType != VaultContentType.FILE) {
+                    TextButton(
+                        onClick = {
+                            controller.updateDraft(item.title, item.text.orEmpty(), item.contentType)
+                        },
+                    ) {
+                        Text("载入编辑")
+                    }
+                }
+            }
+        }
+        val editable = state.snapshot.items.singleOrNull { item ->
+            VaultEntitySelection(VaultEntityKind.ITEM, item.id) in state.selection &&
+                item.contentType != VaultContentType.FILE
+        }
+        val selectedFile = state.snapshot.items.singleOrNull { item ->
+            VaultEntitySelection(VaultEntityKind.ITEM, item.id) in state.selection &&
+                item.contentType == VaultContentType.FILE
+        }
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = {
+                    editable?.let { item ->
+                        runVault {
+                            controller.updateText(UpdateVaultTextCommand(item.id, state.draftTitle, state.draftText))
+                        }
+                    }
+                },
+                enabled = !state.busy && editable != null,
+            ) { Text("更新所选") }
+            Button(
+                onClick = {
+                    selectedFile?.let { item -> onExportFile(item.id, item.fileName ?: "导出文件") }
+                },
+                enabled = !state.busy && selectedFile != null,
+            ) { Text("导出所选文件") }
+            Button(
+                onClick = { selectedFolderId?.let { runVault { controller.moveSelection(it) } } },
+                enabled = !state.busy && state.selection.isNotEmpty() && selectedFolderId != null,
+            ) { Text("移动") }
+            Button(
+                onClick = { runVault { controller.deleteSelection(includeFolderContents = true) } },
+                enabled = !state.busy && state.selection.isNotEmpty(),
+            ) { Text("回收") }
+            Button(
+                onClick = { runVault { controller.restoreSelection() } },
+                enabled = !state.busy && state.section == VaultSection.TRASH && state.selection.isNotEmpty(),
+            ) { Text("恢复") }
+            Button(
+                onClick = { runVault { controller.purgeSelection() } },
+                enabled = !state.busy && state.section == VaultSection.TRASH && state.selection.isNotEmpty(),
+            ) { Text("永久删除") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    runVault { controller.setSelectionPolicy(VaultPolicyCommand(SyncPolicy.LOCAL_ONLY)) }
+                },
+                enabled = !state.busy && state.selection.isNotEmpty(),
+            ) { Text("设为仅本机") }
+            Button(
+                onClick = {
+                    runVault { controller.setSelectionPolicy(VaultPolicyCommand(SyncPolicy.ALL_PAIRED_DEVICES)) }
+                },
+                enabled = !state.busy && state.selection.isNotEmpty(),
+            ) { Text("同步到全部已配对设备") }
+        }
+        state.status?.let { Text(it, modifier = Modifier.testTag("vault_status")) }
+        state.snapshot.notice?.let { Text(it) }
+    }
+}
+
+private fun VaultSection.label(): String = when (this) {
+    VaultSection.INBOX -> "收件箱"
+    VaultSection.ALL -> "全部"
+    VaultSection.FOLDERS -> "文件夹"
+    VaultSection.RECENT -> "最近"
+    VaultSection.SYNCED -> "已同步"
+    VaultSection.LOCAL_ONLY -> "仅本机"
+    VaultSection.TRASH -> "回收站"
+    VaultSection.DEVICES -> "设备"
+}
+
+private fun SyncPolicy.label(): String = when (this) {
+    SyncPolicy.LOCAL_ONLY -> "仅本机"
+    SyncPolicy.SELECTED_DEVICES -> "指定设备"
+    SyncPolicy.ALL_PAIRED_DEVICES -> "全部设备"
+}
+
+private fun VaultContentType.label(): String = when (this) {
+    VaultContentType.TEXT -> "文本"
+    VaultContentType.URL -> "URL"
+    VaultContentType.FILE -> "文件"
+}
+
 @Suppress("FunctionNaming", "LongMethod")
 @Composable
 private fun SendScreen(
@@ -154,7 +441,7 @@ private fun SendScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("显式发送文本或 URL", style = MaterialTheme.typography.titleMedium)
-        Text("A1 尚未接入端到端加密；内容会以明文交给所配置服务器，请勿发送敏感信息。")
+        Text("匿名服务器分享不使用 Vault 加密；内容会以明文交给所配置服务器，请勿发送敏感信息。")
         Text("系统分享和前台剪贴板只会填入草稿；必须再次点击发送。")
         OutlinedTextField(
             value = state.draft,
@@ -295,7 +582,7 @@ private fun SettingsScreen(
             checked = settings.autoSyncPairedDevices,
             onCheckedChange = onAutoSyncChanged,
         )
-        Text("A1 只独立保存该偏好。尚无配对设备或同步通道，因此开关不会触发任何网络发送。")
+        Text("W2/A2 只独立保存该偏好。尚无配对设备或同步通道，因此开关不会触发任何网络发送。")
         HorizontalDivider()
         Text("服务器", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(
@@ -323,6 +610,7 @@ private fun SettingSwitch(
     testTag: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = Modifier
@@ -331,6 +619,7 @@ private fun SettingSwitch(
                 selected = checked,
                 onClick = { onCheckedChange(!checked) },
                 role = Role.Switch,
+                enabled = enabled,
             ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -340,6 +629,7 @@ private fun SettingSwitch(
             checked = checked,
             onCheckedChange = onCheckedChange,
             modifier = Modifier.testTag(testTag),
+            enabled = enabled,
         )
     }
 }

@@ -22,6 +22,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../ClipShare.Windows.Application/ClipShare.Windows.Application.csproj" />
+    <ProjectReference Include="../ClipShare.Windows.Features.Vault/ClipShare.Windows.Features.Vault.csproj" />
     <ProjectReference Include="../ClipShare.Windows.Infrastructure/ClipShare.Windows.Infrastructure.csproj" />
     <ProjectReference Include="../ClipShare.Windows.Platform/ClipShare.Windows.Platform.csproj" />
   </ItemGroup>

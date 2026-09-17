@@ -7,6 +7,9 @@ public sealed class LocalFilePort : ILocalFilePort
 {
     public IUploadFile OpenUpload(string userSelectedPath) => new LocalUploadFile(userSelectedPath);
 
+    public IUploadFile OpenVaultImport(string userSelectedPath) =>
+        new LocalUploadFile(userSelectedPath, maximumLength: long.MaxValue);
+
     public IDownloadTarget CreateDownloadTarget(string userSelectedPath) =>
         new AtomicDownloadTarget(userSelectedPath);
 }

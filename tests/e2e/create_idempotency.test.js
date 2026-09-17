@@ -9,6 +9,7 @@ const {
 } = require("../../test_harness/sandbox_guard.js");
 
 const BASE = getSandboxBaseUrl();
+const PUBLIC_BASE = "https://share.example.test";
 
 function httpGet(url) {
   return new Promise((resolve, reject) => {
@@ -73,7 +74,7 @@ async function main() {
           json: () =>
             Promise.resolve({
               code,
-              url: `${BASE}/s/${code}`,
+              url: `${PUBLIC_BASE}/s/${code}`,
               expires_at: null,
               max_views: null,
               created_at: "2026-08-24T00:00:00.000000Z",
@@ -121,8 +122,8 @@ async function main() {
   if (requests[0].options.body !== requests[1].options.body) {
     throw new Error("retry did not reuse the exact serialized request body");
   }
-  if (!document.getElementById("share-link").value.endsWith("/s/idem01")) {
-    throw new Error("idempotent retry result was not rendered");
+  if (document.getElementById("share-link").value !== `${PUBLIC_BASE}/s/idem01`) {
+    throw new Error("idempotent retry result did not preserve the API public URL");
   }
 
   // 加密创建必须额外复用同一 key/IV/marker；重试时重新加密会导致幂等冲突或孤儿资源。
@@ -152,7 +153,7 @@ async function main() {
     throw new Error("encrypted request did not send an ENC1 marker");
   }
   await waitFor(
-    () => document.getElementById("share-link").value.includes("/s/idem02#k="),
+    () => document.getElementById("share-link").value.startsWith(`${PUBLIC_BASE}/s/idem02#k=`),
     "encrypted result fragment"
   );
   dom.window.close();
